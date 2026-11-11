@@ -37,6 +37,15 @@ use crate::common::{TestTugcast, TestWs};
 /// loud failure up front rather than discovering an `apiKeySource`
 /// contamination in a committed fixture later).
 ///
+/// This is the test harness's own scrub, beside the product's:
+/// `tugcore::provider::ProviderPlan` removes them at the spawn
+/// boundaries whenever the resolved provider is the subscription, and
+/// the harness's `TUG_CONFIG_FILE` (set in `.cargo/config.toml`) points
+/// at a scratch path no test writes, so that is the plan every test run
+/// gets. The harness scrub stays because a contaminated shell should
+/// fail the `apiKeySource` assertion here, not depend on the product
+/// path under test.
+///
 /// - `ANTHROPIC_API_KEY` — the classic API key, per-token billing.
 /// - `ANTHROPIC_AUTH_TOKEN` — alternate API auth header some Anthropic
 ///   SDKs and wrappers use; also per-token.

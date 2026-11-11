@@ -249,9 +249,15 @@ impl TestTugcast {
         // instead of per-token API billing via `ANTHROPIC_API_KEY`. Without
         // this, whatever key is exported in the developer's shell flows
         // through tugcast → tugcode → claude and every test run bills the
-        // API account instead of the subscription. The scrub list lives
-        // in `catalog::AUTH_ENV_VARS` so adding a new variable touches
-        // exactly one site. See `capture_all_probes`'s and
+        // API account instead of the subscription. The product applies the
+        // same removals when the resolved provider is the subscription
+        // (`tugcore::provider::ProviderPlan`), and `TUG_CONFIG_FILE` — set by
+        // `.cargo/config.toml` to a scratch path no test writes — keeps a
+        // developer's provider config out of every cargo-driven process. The
+        // harness scrub is belt and suspenders, so a contaminated shell fails
+        // the test that asserts on `apiKeySource` rather than passing
+        // quietly. The list lives in `catalog::AUTH_ENV_VARS` so adding a new
+        // variable touches exactly one site. See `capture_all_probes`'s and
         // `stream_json_catalog_drift_regression`'s pre-flight refusal.
         let mut command = Command::new(bin);
         command

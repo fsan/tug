@@ -37,7 +37,9 @@
  *   2. Logged in to Claude — browser OAuth shell-out.
  *   3. Choose a default project directory — a path chooser prefilled with
  *      `~/tug`. Confirming creates the directory and writes it to tugbank as
- *      the app-wide default project directory.
+ *      the app-wide default project directory. The settled row keeps a
+ *      **Change Directory…** door, so a choice revised a moment after it was
+ *      made is one press away rather than a trip to Settings.
  *   4. Start a session — pops the first Session card. First-run only:
  *      a set-up user whose deck goes empty mid-life is left alone with it.
  *
@@ -51,9 +53,20 @@
  *
  * The projects-folder step gates the one below it: where projects live decides
  * what Open Quickly and the session picker reach for, so that answer is settled
- * before the wizard hands over a session. Nothing here asks about models — Tug
- * runs its aux model work on the user's Claude subscription, so signing in is
- * the only answer that question ever needed.
+ * before the wizard hands over a session.
+ *
+ * The login step has two answers, not one. Logging in to Claude is the default,
+ * because a Session card runs the `claude` CLI and most people reach a model
+ * through a subscription. The other answer is a provider the machine's
+ * `config.toml` names — an Anthropic API key, Amazon Bedrock, an Ollama or
+ * other Anthropic-Messages endpoint — and the step's form writes that file
+ * (`set_provider`) rather than making the user author TOML in Application
+ * Support. The door is on every reading of the row, the settled one included:
+ * a person already signed in is exactly the one who may want Bedrock or a local
+ * endpoint instead, so the logged-in row keeps its email and subscription line
+ * and offers "Use Another Provider…" beside them, with its Log Out on the
+ * on-demand visit. Under a provider the row names the provider instead of
+ * claiming a login, and offers the form again to change it.
  *
  * Two ways in. The wizard opens itself when setup isn't done (the steps above),
  * and the Tug-menu "Configure Tug…" item opens it on demand on an app that is
@@ -159,6 +172,10 @@ import {
 } from "./configure-tug-copy";
 import { TugPushButton } from "./tug-push-button";
 import { TugFileChooser } from "./tug-file-chooser";
+import {
+  ConfigureTugProviderForm,
+} from "./configure-tug-provider-form";
+import { configuredProviderLabel } from "./configure-tug-provider";
 import { TugStepRow, type TugStepRowStatus } from "./tug-step-row";
 import { TugProgressIndicator } from "./tug-progress-indicator";
 import "./tug-alert.css";
@@ -326,22 +343,43 @@ function StepRow({
      */
     pressWhileBusy?: boolean;
   };
-  secondaryCta?: { label: string; onClick: () => void };
+  /**
+   * Quieter buttons left of the check (or of the CTA). One or several: the
+   * settled login row carries both of its own answers — the provider door and
+   * the way out of the login — and neither is more an answer than the other.
+   */
+  secondaryCta?:
+    | { label: string; onClick: () => void }
+    | ReadonlyArray<{ label: string; onClick: () => void }>;
   /** This row's button is Return's home and wears the double ring. */
   returnHome: boolean;
   /** The strip along the plinth's bottom — the download's bar. Costs no height. */
   edge?: ReactNode;
 }): ReactElement {
-  const secondary = secondaryCta && (
-    <TugPushButton size="sm" emphasis="ghost" onClick={secondaryCta.onClick}>
-      {secondaryCta.label}
-    </TugPushButton>
-  );
+  const secondaryList =
+    secondaryCta === undefined
+      ? []
+      : Array.isArray(secondaryCta)
+        ? secondaryCta
+        : [secondaryCta as { label: string; onClick: () => void }];
+  const secondary =
+    secondaryList.length > 0 &&
+    secondaryList.map((item) => (
+      <TugPushButton
+        key={item.label}
+        size="sm"
+        emphasis="ghost"
+        onClick={item.onClick}
+      >
+        {item.label}
+      </TugPushButton>
+    ));
   // A settled step normally shows the green check. When it carries a CTA
   // anyway — the installed-but-updatable row — the offer takes the slot: the
   // dot already says "done", and a check next to an Update button would be two
   // answers to the same question. A secondary CTA is not an answer — the
-  // logged-in row's Log Out… — so it rides to the left of the check.
+  // logged-in row's provider door and Log Out… — so it rides to the left of
+  // the check.
   const action =
     status === "done" && !cta ? (
       <>
@@ -396,6 +434,9 @@ export function ConfigureTug(): ReactElement {
     downloadComplete,
     verifyingInstall,
     installError,
+    provider,
+    savingProvider,
+    providerError,
   } = useAuth();
   const {
     installed,
@@ -438,6 +479,15 @@ export function ConfigureTug(): ReactElement {
   const [projectDirConfirmed, setProjectDirConfirmed] = useState(false);
   const [projectDirBusy, setProjectDirBusy] = useState(false);
   const [projectDirError, setProjectDirError] = useState<string | null>(null);
+  // The settled row's other answer: choosing again. Confirming a directory is
+  // not the end of the question — a user who picked one and then thought better
+  // of it should not have to close the wizard (or find Settings) to say so.
+  const [projectDirEditing, setProjectDirEditing] = useState(false);
+  // The provider form at the login step — that step's other answer. The draft
+  // lives in the form (nothing out here needs it), so this is only whether the
+  // form is up, and whether a save of it is waiting on its own result.
+  const [providerFormOpen, setProviderFormOpen] = useState(false);
+  const [providerSavePending, setProviderSavePending] = useState(false);
 
   const forced = import.meta.env.DEV ? SESSION_FORCE_SETUP : false;
   const forcedLoggedIn = forced === "open_session";
@@ -515,10 +565,24 @@ export function ConfigureTug(): ReactElement {
   useEffect(() => {
     if (onDemand) {
       setProjectDirConfirmed(false);
+      setProjectDirEditing(false);
       setProjectDirError(null);
       setProjectPathDraft(null);
+      setProviderFormOpen(false);
+      setProviderSavePending(false);
     }
   }, [onDemand]);
+
+  // A provider write that settled without an error has done its job: the form
+  // closes and the re-probe's `claude_auth_result` reshapes the login row. A
+  // write that failed keeps the form up, because the frame's sentence — the
+  // config's own words — is what the row under it is showing, and the fields
+  // are where the fix is.
+  useEffect(() => {
+    if (!providerSavePending || savingProvider) return;
+    setProviderSavePending(false);
+    if (providerError === null) setProviderFormOpen(false);
+  }, [providerSavePending, savingProvider, providerError]);
 
   // Sign-in safety net: the CLI's `claude auth login` blocks on its own browser
   // OAuth callback with no backend timeout, so a user who abandons the browser
@@ -691,6 +755,16 @@ export function ConfigureTug(): ReactElement {
     authStore.setSigningIn(true);
     getConnection()?.sendControlFrame("claude_sign_in");
   };
+  // The login step's other answer. The form hands back the `[provider]` table
+  // as a choice; tugcast validates it with the same resolver every spawn uses
+  // and writes it, so the wizard is not a second, laxer door onto the file.
+  const handleSaveProvider = (choice: {
+    provider: Record<string, unknown>;
+  }): void => {
+    authStore.setSavingProvider(true);
+    setProviderSavePending(true);
+    getConnection()?.sendControlFrame("set_provider", choice);
+  };
   const handleConfirmProjectDir = (): void => {
     const path = projectPathValue.trim();
     if (path === "") return;
@@ -709,6 +783,9 @@ export function ConfigureTug(): ReactElement {
         }
         setProjectPathDraft(null);
         setProjectDirConfirmed(true);
+        // A change that landed settles the row again; the chooser stays only
+        // while it is being used.
+        setProjectDirEditing(false);
       });
   };
   // The wizard already has the answer the picker would ask for — the projects
@@ -736,8 +813,13 @@ export function ConfigureTug(): ReactElement {
     /** Extra content under the detail line — the project directory's chooser. */
     body?: (returnHome: boolean) => ReactElement;
     cta?: { label: string; onClick: () => void; pressWhileBusy?: boolean };
-    /** A quieter alternative to the primary CTA, e.g. declining an offer. */
-    secondaryCta?: { label: string; onClick: () => void };
+    /**
+     * A quieter alternative to the primary CTA, e.g. declining an offer — or
+     * several, when one reading of the row has two of them.
+     */
+    secondaryCta?:
+      | { label: string; onClick: () => void }
+      | ReadonlyArray<{ label: string; onClick: () => void }>;
     /**
      * Chrome along the bottom of the plinth — the download's bar. It goes here
      * rather than in {@link body} because a stacking slot costs the row a line,
@@ -923,64 +1005,130 @@ export function ConfigureTug(): ReactElement {
   const offlineSignIn = authOfflineCopy(
     loggedOutOffline ? "logged_out_offline" : "probe_failed",
   );
-  const signInStep: Step = claudeMissing
-    ? { key: "signin", status: "pending", label: "Log in to Claude" }
-    : claudeTooOld && !effectiveLoggedIn && !signingIn
-      ? {
-          key: "signin",
-          status: "pending",
-          label: "Log in to Claude",
-          detail: `Waiting for Claude Code ${MIN_CLAUDE_CODE_VERSION} or later.`,
-        }
-    : signingIn
-      ? {
-          key: "signin",
-          status: "busy",
-          label: "Log in to Claude",
-          detail: "Use your browser to log in…",
-          cta: { label: "Logging in…", onClick: handleSignIn },
-        }
-      : (probeFailed || loggedOutOffline) && !effectiveLoggedIn
-        ? // Two readings, one row. Either Tug could not tell (`probe_failed`)
-          // or it can tell and knows the network is why the fix will not
-          // work (`logged_out` over an unsatisfied path). Both keep the
-          // button: pressing it re-probes on the way to a sign-in, which is
-          // exactly what the user wants when the network comes back.
-          {
-            key: "signin",
-            status: "error",
-            label: offlineSignIn.label,
-            detail: offlineSignIn.detail,
-            cta: { label: offlineSignIn.cta, onClick: handleSignIn },
-          }
-        : effectiveLoggedIn
-          ? {
-            key: "signin",
-            status: "done",
-            label: account?.email ? `Logged in as ${account.email}` : "Logged in to Claude",
-            detail: subscriptionLabel(account?.subscriptionType),
-            // The on-demand visit is the gesture for changing an answer, so it
-            // offers the way out of a login; a first run just made this one.
-            // TugLogout owns the confirm and everything after it.
-            ...(showingOnDemand
-              ? { secondaryCta: { label: "Log Out…", onClick: requestLogout } }
-              : {}),
-          }
-          : signInFailed
-            ? {
-              key: "signin",
-              status: "error",
-              label: "Log in to Claude",
-              detail: "Log-in didn't finish. The browser may have been closed.",
-              cta: { label: "Try Again", onClick: handleSignIn },
-            }
-            : {
-              key: "signin",
-              status: "active",
-              label: "Log in to Claude",
-              detail: "Sessions run on your Claude subscription.",
-              cta: { label: "Log In", onClick: handleSignIn },
-            };
+  // What the row is called over a provider the config file names instead of the
+  // subscription. `null` means the row is the subscription's own — a login, an
+  // email, a Log Out.
+  const providerLabel = configuredProviderLabel(provider);
+  const chooseProvider = (): void => {
+    // A sentence from a write the user abandoned is about a choice they are no
+    // longer making; the form opens clean.
+    authStore.clearProviderError();
+    setProviderFormOpen(true);
+  };
+
+  const signInStep: Step = (() => {
+    const key = "signin";
+    // The step's other answer, up: while the form is open it is the row, because
+    // a choice being made is what this step is about. Its own result decides
+    // when it closes — a landed write closes it, a refused one keeps it up with
+    // the config's sentence on the detail line.
+    if (providerFormOpen) {
+      return {
+        key,
+        status:
+          providerError !== null ? "error" : savingProvider ? "busy" : "active",
+        label: "Choose a model provider",
+        detail:
+          providerError !== null
+            ? `Couldn't save this provider: ${providerError}`
+            : "New sessions run on the provider you pick. Tug keeps the choice in its config file, outside every project.",
+        body: (returnHome: boolean) => (
+          <ConfigureTugProviderForm
+            provider={provider}
+            saving={savingProvider}
+            returnHome={returnHome}
+            onCancel={() => setProviderFormOpen(false)}
+            onSave={handleSaveProvider}
+          />
+        ),
+      };
+    }
+    if (claudeMissing) {
+      return { key, status: "pending", label: "Log in to Claude" };
+    }
+    if (claudeTooOld && !effectiveLoggedIn && !signingIn) {
+      return {
+        key,
+        status: "pending",
+        label: "Log in to Claude",
+        detail: `Waiting for Claude Code ${MIN_CLAUDE_CODE_VERSION} or later.`,
+      };
+    }
+    if (signingIn) {
+      return {
+        key,
+        status: "busy",
+        label: "Log in to Claude",
+        detail: "Use your browser to log in…",
+        cta: { label: "Logging in…", onClick: handleSignIn },
+      };
+    }
+    if ((probeFailed || loggedOutOffline) && !effectiveLoggedIn) {
+      // Two readings, one row. Either Tug could not tell (`probe_failed`)
+      // or it can tell and knows the network is why the fix will not
+      // work (`logged_out` over an unsatisfied path). Both keep the
+      // button: pressing it re-probes on the way to a sign-in, which is
+      // exactly what the user wants when the network comes back. And both
+      // keep the provider door, which needs no network round-trip of its
+      // own to be worth offering — the endpoint may be on this machine.
+      return {
+        key,
+        status: "error",
+        label: offlineSignIn.label,
+        detail: offlineSignIn.detail,
+        cta: { label: offlineSignIn.cta, onClick: handleSignIn },
+        secondaryCta: { label: "Use Another Provider…", onClick: chooseProvider },
+      };
+    }
+    if (effectiveLoggedIn) {
+      if (providerLabel !== null) {
+        return {
+          key,
+          status: "done",
+          label: providerLabel,
+          detail: "New sessions run on the provider in Tug's config file.",
+          secondaryCta: { label: "Change Provider…", onClick: chooseProvider },
+        };
+      }
+      return {
+        key,
+        status: "done",
+        label: account?.email ? `Logged in as ${account.email}` : "Logged in to Claude",
+        detail: subscriptionLabel(account?.subscriptionType),
+        // The step's other answer stays offered here, on the settled row: a
+        // person who is already signed in is exactly the one who may reach a
+        // model through a key, Bedrock or a local endpoint instead, and a door
+        // that only appears to a logged-out user is a door they never see. The
+        // on-demand visit is also the gesture for changing a login, so it adds
+        // the way out beside it; a first run just made this one. TugLogout owns
+        // the confirm and everything after it.
+        secondaryCta: showingOnDemand
+          ? [
+              { label: "Use Another Provider…", onClick: chooseProvider },
+              { label: "Log Out…", onClick: requestLogout },
+            ]
+          : { label: "Use Another Provider…", onClick: chooseProvider },
+      };
+    }
+    if (signInFailed) {
+      return {
+        key,
+        status: "error",
+        label: "Log in to Claude",
+        detail: "Log-in didn't finish. The browser may have been closed.",
+        cta: { label: "Try Again", onClick: handleSignIn },
+        secondaryCta: { label: "Use Another Provider…", onClick: chooseProvider },
+      };
+    }
+    return {
+      key,
+      status: "active",
+      label: "Log in to Claude",
+      detail: "Sessions run on your Claude subscription.",
+      cta: { label: "Log In", onClick: handleSignIn },
+      secondaryCta: { label: "Use Another Provider…", onClick: chooseProvider },
+    };
+  })();
 
   // Where the user's projects live. Always ends up persisted explicitly: the
   // session picker's seed chain reads the explicit value, so a post-setup user
@@ -992,13 +1140,26 @@ export function ConfigureTug(): ReactElement {
       return { key, status: "pending", label: "Choose a default project directory" };
     }
     // Settled: confirmed just now, or already chosen on a previous run. An
-    // on-demand visit is the gesture for changing it, so it re-opens there.
-    if (projectDirConfirmed || (storedProjectPath !== "" && !showingOnDemand)) {
+    // on-demand visit is the gesture for changing it, so it re-opens there —
+    // and the settled row carries its own Change Directory… for the visit where
+    // the user changes their mind after confirming, rather than closing the
+    // wizard and coming back in.
+    if (
+      (projectDirConfirmed || (storedProjectPath !== "" && !showingOnDemand)) &&
+      !projectDirEditing
+    ) {
       return {
         key,
         status: "done",
         label: "Default project directory",
         detail: projectDirConfirmed ? projectPathValue : storedProjectPath,
+        secondaryCta: {
+          label: "Change Directory…",
+          onClick: () => {
+            setProjectDirError(null);
+            setProjectDirEditing(true);
+          },
+        },
       };
     }
     // The chooser and its confirm button ride the body together on one
@@ -1059,7 +1220,12 @@ export function ConfigureTug(): ReactElement {
     };
   })();
 
-  const projectDirSettled = projectDirStep.status === "done";
+  // A re-opened chooser over a directory the user already chose settles
+  // nothing: the answer on disk is still there, so the session row stays live
+  // while they reconsider rather than claiming there is no directory.
+  const projectDirSettled =
+    projectDirStep.status === "done" ||
+    (projectDirEditing && storedProjectPath !== "");
 
   const openStep: Step = !effectiveLoggedIn
     ? // Pending (logged-out) preview: with cards already open — the

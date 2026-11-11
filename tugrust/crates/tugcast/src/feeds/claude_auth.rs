@@ -5,13 +5,18 @@
 //!
 //! `claude` owns authentication (the credentials live in the macOS Keychain,
 //! not a file we could read), so we ask the CLI rather than inspecting storage
-//! directly. The same Anthropic auth env vars that `agent_bridge` scrubs before
-//! spawning sessions are scrubbed here, so the reported status reflects the
-//! subscription auth path (`~/.claude.json`) that sessions actually use rather
-//! than a stray `ANTHROPIC_API_KEY` in the developer's environment.
+//! directly. The probe runs under the **configured** provider's environment —
+//! the one [`tugcore::provider`] resolves from the user's config file — so a
+//! session on Bedrock or a local Ollama endpoint reports the login state it
+//! will actually spawn with, not a subscription state it will never use, and
+//! the setup wizard's sign-in step is satisfied by the configured provider
+//! rather than demanded of a user who has no subscription login to give.
+//! `auth login` and `auth logout` stay on the subscription: they drive the
+//! OAuth flow, which is the one auth method those verbs own.
 
 use tokio::process::Command;
 
+use tugcore::provider::{EnvOp, ProviderMethod, ProviderPlan};
 use tugcore::version::parse_leading_version as parse_version;
 
 /// Resolved Claude Code login state.
@@ -46,16 +51,6 @@ pub struct AccountInfo {
     pub auth_method: Option<String>,
 }
 
-/// Anthropic auth env vars scrubbed so the probe and login authenticate via the
-/// user's subscription, matching `agent_bridge` session spawns. Keep in sync
-/// with `AUTH_ENV_VARS` in `tests/common/catalog.rs` and the destructure in
-/// `tugcode/src/session.ts::spawnClaude`.
-const AUTH_ENV_VARS: [&str; 3] = [
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "CLAUDE_CODE_OAUTH_TOKEN",
-];
-
 /// Resolve the `claude` executable: the user's PATH first, then the native
 /// installer's `~/.local/bin/claude` as a fallback. This lets Tug find a
 /// `claude` installed by `claude.ai/install.sh` even when the user hasn't added
@@ -81,14 +76,76 @@ pub fn claude_executable() -> std::ffi::OsString {
     std::ffi::OsString::from("claude")
 }
 
-/// A `claude` command with the Anthropic auth env vars scrubbed. Shared with
-/// [`super::claude_usage`] so `/usage` authenticates via the same subscription
-/// path (`~/.claude.json`) that sessions and the auth probe use.
+/// A `claude` command under the user's configured provider.
+///
+/// Shared with [`super::claude_usage`], the shared agent pool and the scribe,
+/// so every auxiliary `claude` process authenticates exactly as a Session
+/// card's does. A provider config that cannot be read falls back to the
+/// subscription here, with a warning: these callers have no card to put the
+/// error on, and a probe that refuses to answer would be worse than one that
+/// reports the login it can see. A session spawn reports the config error
+/// itself, where the user can read it.
 pub(crate) fn claude_command(args: &[&str]) -> Command {
+    let plan = match ProviderPlan::load() {
+        Ok(plan) => plan,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "provider config could not be read; using the subscription"
+            );
+            ProviderPlan::legacy_subscription()
+        }
+    };
+    build_claude_command(args, &plan)
+}
+
+/// A `claude` command for subscription-only verbs (`auth login`,
+/// `auth logout`, `/usage`), which always speak to the OAuth login
+/// regardless of the configured provider.
+pub(crate) fn subscription_command(args: &[&str]) -> Command {
+    build_claude_command(args, &ProviderPlan::legacy_subscription())
+}
+
+/// Build the command, applying the plan's env and, when the provider has no
+/// model aliases, rewriting a `--model` the caller passed in place.
+///
+/// The rewrite is what lets a local Ollama model survive the shared agent's
+/// `--model haiku`: the endpoint has no such alias, and a silent fallback to
+/// "the default" would ask for a Claude model it does not serve. A command
+/// that passes no `--model` — `--version`, `auth status` — is left alone,
+/// because the plan's environment already names the model for every
+/// invocation that actually runs one, and appending a flag a subcommand does
+/// not accept would turn a harmless probe into a failure.
+fn build_claude_command(args: &[&str], plan: &ProviderPlan) -> Command {
     let mut cmd = Command::new(claude_executable());
-    cmd.args(args);
-    for var in AUTH_ENV_VARS {
-        cmd.env_remove(var);
+    match plan.forced_model() {
+        Some(forced) => {
+            let mut args = args.iter();
+            while let Some(arg) = args.next() {
+                if *arg == "--model" {
+                    // Replace the flag's value rather than the whole flag: the
+                    // caller passed it deliberately, and its position relative
+                    // to the other options is the caller's.
+                    args.next();
+                    cmd.arg("--model").arg(forced);
+                } else {
+                    cmd.arg(arg);
+                }
+            }
+        }
+        None => {
+            cmd.args(args);
+        }
+    }
+    for op in plan.env_ops() {
+        match op {
+            EnvOp::Remove(var) => {
+                cmd.env_remove(var);
+            }
+            EnvOp::Set(key, value) => {
+                cmd.env(key, value);
+            }
+        }
     }
     cmd
 }
@@ -112,12 +169,54 @@ const AUTH_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5
 /// sign-in rather than silently crash-looping a session. A probe that does not
 /// answer inside [`AUTH_PROBE_TIMEOUT`] resolves to [`AuthState::Unknown`]
 /// instead — see that arm for why silence is not a signed-out answer.
+///
+/// A provider config that cannot be resolved is also [`AuthState::Unknown`]:
+/// there is no login state to report until the file is fixed, and the session
+/// spawn will put the file's own sentence on the card.
+///
+/// A configured provider outranks a `loggedIn: false` answer — see
+/// [`resolve_login_state`].
 pub async fn probe() -> AuthState {
-    probe_command(
-        claude_command(&["auth", "status", "--json"]),
+    let plan = match ProviderPlan::load() {
+        Ok(plan) => plan,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "provider config could not be read; login state is unknown"
+            );
+            return AuthState::Unknown;
+        }
+    };
+    let answered = probe_command(
+        build_claude_command(&["auth", "status", "--json"], &plan),
         AUTH_PROBE_TIMEOUT,
     )
-    .await
+    .await;
+    resolve_login_state(answered, &plan)
+}
+
+/// Reconcile the CLI's answer with the provider the config selected.
+///
+/// Under the subscription the answer is the answer. Under any other provider
+/// it is not: the credentials the plan already resolved from `config.toml` are
+/// what the session will run on, and the CLI's own report of "logged in" is
+/// derived from that same environment rather than the other way round. The
+/// setup wizard gates its sign-in row on `loggedIn`, so a `false` here would
+/// claim the app with a login the user does not need and cannot satisfy with a
+/// subscription — pinning the provider's authority here is what makes login
+/// genuinely optional once a config file names a method.
+///
+/// What still passes through is everything the config cannot speak to: a
+/// missing `claude` is about the binary, and silence is about the probe. A
+/// malformed model, key, or endpoint is not reported here at all — the session
+/// spawn puts the config's own sentence on the card.
+fn resolve_login_state(answered: AuthState, plan: &ProviderPlan) -> AuthState {
+    match answered {
+        AuthState::LoggedOut if plan.method() != ProviderMethod::Subscription => {
+            AuthState::LoggedIn(AccountInfo::default())
+        }
+        other => other,
+    }
 }
 
 /// The bounded probe itself, over a command the caller supplies.
@@ -176,7 +275,7 @@ fn parse_status(stdout: &str) -> AuthState {
 /// authoritative source of truth (the user may have completed or abandoned the
 /// browser flow).
 pub async fn login() -> AuthState {
-    let _ = claude_command(&["auth", "login"]).status().await;
+    let _ = subscription_command(&["auth", "login"]).status().await;
     probe().await
 }
 
@@ -186,7 +285,7 @@ pub async fn login() -> AuthState {
 /// tell the user it didn't work instead of pretending they're logged out. The
 /// caller re-probes afterward to broadcast the authoritative auth state.
 pub async fn logout() -> (bool, Option<String>) {
-    match claude_command(&["auth", "logout"]).output().await {
+    match subscription_command(&["auth", "logout"]).output().await {
         Ok(out) if out.status.success() => (true, None),
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
@@ -328,6 +427,96 @@ mod tests {
         assert_eq!(
             probe_command(garbage, std::time::Duration::from_secs(20)).await,
             AuthState::LoggedOut
+        );
+    }
+
+    fn plan_for(text: &str) -> ProviderPlan {
+        ProviderPlan::parse(text, std::path::Path::new("config.toml"), &|_: &str| None)
+            .expect("parses")
+    }
+
+    #[test]
+    fn a_configured_provider_outranks_a_logged_out_answer() {
+        // The wizard claims the app on `loggedIn: false`, and a subscription
+        // cannot satisfy a card running on Bedrock or a local endpoint. The
+        // config already resolved the credentials, so the gate believes it.
+        let ollama = plan_for(
+            "[provider]\nmethod = \"ollama\"\n[provider.ollama]\nmodel = \"qwen3-coder\"\n",
+        );
+        assert_eq!(
+            resolve_login_state(AuthState::LoggedOut, &ollama),
+            AuthState::LoggedIn(AccountInfo::default())
+        );
+
+        let api = plan_for("[provider]\nmethod = \"api\"\n[provider.api]\napi_key = \"k\"\n");
+        assert_eq!(
+            resolve_login_state(AuthState::LoggedOut, &api),
+            AuthState::LoggedIn(AccountInfo::default())
+        );
+    }
+
+    #[test]
+    fn the_subscription_and_the_binarys_own_answers_are_untouched() {
+        // No config file: the old behaviour, exactly.
+        assert_eq!(
+            resolve_login_state(AuthState::LoggedOut, &ProviderPlan::legacy_subscription()),
+            AuthState::LoggedOut
+        );
+        // An explicit subscription is the same answer, not a provider.
+        let explicit = plan_for("[provider]\nmethod = \"subscription\"\n");
+        assert_eq!(
+            resolve_login_state(AuthState::LoggedOut, &explicit),
+            AuthState::LoggedOut
+        );
+
+        // A missing binary and a probe that never answered are facts the
+        // config cannot speak to, so they survive the reconciliation.
+        let ollama = plan_for(
+            "[provider]\nmethod = \"ollama\"\n[provider.ollama]\nmodel = \"qwen3-coder\"\n",
+        );
+        assert_eq!(
+            resolve_login_state(AuthState::ClaudeMissing, &ollama),
+            AuthState::ClaudeMissing
+        );
+        assert_eq!(
+            resolve_login_state(AuthState::Unknown, &ollama),
+            AuthState::Unknown
+        );
+    }
+
+    #[test]
+    fn a_forced_model_rewrites_a_passed_model_and_leaves_a_flagless_command_alone() {
+        // A local endpoint has no `haiku` alias, so the shared agent's model
+        // selector must be rewritten — and a command that runs no model must
+        // not collect a flag on the way past, which is what appending the
+        // model unconditionally used to do to `--version` and `auth status`.
+        let plan = ProviderPlan::parse(
+            "[provider]\nmethod = \"ollama\"\n[provider.ollama]\nmodel = \"qwen3-coder\"\n",
+            std::path::Path::new("config.toml"),
+            &|_: &str| None,
+        )
+        .expect("parses");
+        let args_of = |cmd: Command| -> Vec<String> {
+            cmd.as_std()
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect()
+        };
+
+        assert_eq!(
+            args_of(build_claude_command(
+                &["-p", "hi", "--model", "haiku"],
+                &plan
+            )),
+            ["-p", "hi", "--model", "qwen3-coder"]
+        );
+        assert_eq!(
+            args_of(build_claude_command(&["--version"], &plan)),
+            ["--version"]
+        );
+        assert_eq!(
+            args_of(build_claude_command(&["auth", "status", "--json"], &plan)),
+            ["auth", "status", "--json"]
         );
     }
 

@@ -94,6 +94,7 @@ import {
   applyDownloadStoppedPayload,
   applyInstallResultPayload,
   applyLogoutResultPayload,
+  applyProviderResultPayload,
 } from "./lib/auth-store";
 import {
   applyVersionResultPayload,
@@ -1843,6 +1844,14 @@ export function registerSetupActions(): void {
   // TugLogout orchestrator surfaces.
   registerAction("claude_logout_result", (payload) => {
     applyLogoutResultPayload(payload);
+  });
+
+  // provider_config_result: outcome of `set_provider` — the setup wizard's
+  // provider form. On success the re-probe that follows it arrives as
+  // claude_auth_result and settles the wizard's login row; on failure this
+  // frame carries the config's own sentence, which the row shows.
+  registerAction("provider_config_result", (payload) => {
+    applyProviderResultPayload(payload);
   });
 }
 

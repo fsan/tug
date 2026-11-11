@@ -28,6 +28,7 @@ mod lock_policy_scan;
 pub mod moved_call;
 pub mod pathform;
 pub mod ports;
+pub mod provider;
 pub mod quiesce;
 pub mod registry;
 pub mod report_gaps;

@@ -126,6 +126,7 @@ control_actions! {
     UpdateClaude => "update_claude",
     ClaudeSignIn => "claude_sign_in",
     ClaudeLogout => "claude_logout",
+    SetProvider => "set_provider",
     SharedAgentClassify => "shared_agent_classify",
 }
 

@@ -1,12 +1,14 @@
 /**
  * App-level Claude login state — the single source of truth for the auth gate.
  *
- * Fed exclusively by `claude_auth_result` CONTROL frames (the deck sends
- * `check_auth` on connect / before the picker, and `claude_sign_in` from a
- * sign-in affordance; tugcast answers both with `claude_auth_result`). The
- * app-wide sign-in sheet, the session-picker gate, and the per-card auth
- * banner all read this one store, so a single result frame resolves every
- * surface at once.
+ * Fed by `claude_auth_result` CONTROL frames (the deck sends `check_auth` on
+ * connect / before the picker, and `claude_sign_in` from a sign-in affordance;
+ * tugcast answers both with `claude_auth_result`), plus the
+ * `provider_config_result` that ends a `set_provider` write — the setup
+ * wizard's provider form, whose re-probe arrives as a `claude_auth_result`
+ * like any other. The app-wide sign-in sheet, the session-picker gate, and the
+ * per-card auth banner all read this one store, so a single result frame
+ * resolves every surface at once.
  *
  * **Laws:** [L02] external state enters React through `useSyncExternalStore`
  * only — this store exposes `subscribe + getSnapshot` and is read via that
@@ -35,6 +37,26 @@ export interface AuthAccount {
  * reason is what tells "not yet" from "could not".
  */
 export type AuthReason = "claude_missing" | "logged_out" | "probe_failed";
+
+/**
+ * The model provider the machine's `config.toml` selects, as
+ * `claude_auth_result` reports it.
+ *
+ * `"subscription"` is the Claude login this store's other fields are about.
+ * Anything else is a provider the file names — an Anthropic API key, Amazon
+ * Bedrock, an Ollama or other Anthropic-Messages endpoint — and under one of
+ * those the login state says nothing about a subscription: the wizard's login
+ * row names the provider instead of claiming a login.
+ */
+export type AuthProvider = "subscription" | "api" | "bedrock" | "ollama";
+
+/** The provider names the wire may carry, for reading a frame tolerantly. */
+const AUTH_PROVIDERS: ReadonlySet<string> = new Set([
+  "subscription",
+  "api",
+  "bedrock",
+  "ollama",
+]);
 
 export interface AuthSnapshot {
   /**
@@ -122,6 +144,19 @@ export interface AuthSnapshot {
   verifyingInstall: boolean;
   /** Last install error, or `null`. Cleared when a new install starts. */
   installError: string | null;
+  /**
+   * The provider the config file selects, or `null` when the file could not be
+   * resolved (or no probe has reported yet) — which is not a claim that the
+   * subscription is in force.
+   */
+  provider: AuthProvider | null;
+  /** True between sending `set_provider` and its `provider_config_result`. */
+  savingProvider: boolean;
+  /**
+   * The last provider-write error — the config's own sentence, from tugcast —
+   * or `null`. Cleared when a new write starts or a write succeeds.
+   */
+  providerError: string | null;
 }
 
 const INITIAL: AuthSnapshot = {
@@ -142,6 +177,9 @@ const INITIAL: AuthSnapshot = {
   expectedBytes: 0,
   verifyingInstall: false,
   installError: null,
+  provider: null,
+  savingProvider: false,
+  providerError: null,
 };
 
 /**
@@ -412,10 +450,49 @@ class AuthStore extends Subscribable {
     this.notify();
   }
 
+  /**
+   * Clear a surfaced provider-write error — the form was closed, or reopened
+   * to try again. A stale sentence over fresh blank fields is a claim about a
+   * choice the user is no longer making.
+   */
+  clearProviderError(): void {
+    if (this._snapshot.providerError === null) return;
+    this._snapshot = { ...this._snapshot, providerError: null };
+    this.notify();
+  }
+
   /** Clear a surfaced logout error (the user dismissed it). */
   clearLogoutError(): void {
     if (this._snapshot.logoutError === null) return;
     this._snapshot = { ...this._snapshot, logoutError: null };
+    this.notify();
+  }
+
+  /**
+   * Mark a provider write in flight (clears any prior write error). The
+   * wizard's provider row says "Saving…" from this until the result frame.
+   */
+  setSavingProvider(saving: boolean): void {
+    this._snapshot = {
+      ...this._snapshot,
+      savingProvider: saving,
+      providerError: saving ? null : this._snapshot.providerError,
+    };
+    this.notify();
+  }
+
+  /**
+   * Apply a `provider_config_result`: ends the in-flight write, and on failure
+   * records the config's own sentence so the row that made the choice can
+   * show it. On success the re-probe's `claude_auth_result` follows and is what
+   * settles the row — this frame only ends the wait.
+   */
+  applyProviderResult(ok: boolean, error: string | null): void {
+    this._snapshot = {
+      ...this._snapshot,
+      savingProvider: false,
+      providerError: ok ? null : (error ?? "the provider config could not be saved"),
+    };
     this.notify();
   }
 
@@ -424,6 +501,7 @@ class AuthStore extends Subscribable {
     loggedIn: boolean | null,
     reason: AuthReason | null,
     account: AuthAccount | null,
+    provider: AuthProvider | null,
   ): void {
     // A result that arrives while a sign-in was in flight but does not log in
     // means the attempt failed (cancelled / browser closed). A successful login
@@ -447,6 +525,10 @@ class AuthStore extends Subscribable {
       // This result is the post-install re-probe (or any later probe): the
       // install step now resolves to its real state, so the bridge ends.
       verifyingInstall: false,
+      // The provider comes from the same frame, not from the account: under a
+      // provider the login answer is Tug's own reconciliation of the config
+      // file, and this is the name that says so.
+      provider,
     };
     this.notify();
   }
@@ -495,6 +577,13 @@ export function applyAuthResultPayload(payload: Record<string, unknown>): void {
   // unknown rather than as a signed-out claim.
   const loggedIn: boolean | null =
     payload.loggedIn === true ? true : payload.loggedIn === false ? false : null;
+  // A provider name this build does not know is read as "no claim" rather than
+  // as a provider, so a newer tugcast's method cannot make an older deck
+  // pretend the subscription is in force.
+  const provider: AuthProvider | null =
+    typeof payload.provider === "string" && AUTH_PROVIDERS.has(payload.provider)
+      ? (payload.provider as AuthProvider)
+      : null;
   authStore.applyResult(
     loggedIn,
     reason,
@@ -505,6 +594,20 @@ export function applyAuthResultPayload(payload: Record<string, unknown>): void {
           authMethod: str(payload.authMethod),
         }
       : null,
+    provider,
+  );
+}
+
+/**
+ * Apply a `provider_config_result` CONTROL payload (`{ok, error}`). The frame
+ * that follows it — tugcast's re-probe — is what settles the wizard's row.
+ */
+export function applyProviderResultPayload(
+  payload: Record<string, unknown>,
+): void {
+  authStore.applyProviderResult(
+    payload.ok === true,
+    typeof payload.error === "string" ? payload.error : null,
   );
 }
 

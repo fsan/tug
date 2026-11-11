@@ -26,3 +26,9 @@ TUG_TEST_ISOLATION = { value = "1", force = true }
 # file — the same path TUG_DATA_DIR + TUG_INSTANCE_ID resolve to — so the
 # override and the data dir agree instead of racing.
 TUG_SESSIONS_DB = { value = "target/tug-test-data/Tug/instances/cargo-test/sessions.db", relative = true, force = true }
+
+# A test must never read the developer's provider config — it can name a
+# provider that would send test traffic to a real cloud, and it carries
+# credentials. Point every cargo-driven process at a scratch path that no test
+# writes, the same way TUG_DATA_DIR isolates the rest of the tree.
+TUG_CONFIG_FILE = { value = "target/tug-test-data/Tug/config.toml", relative = true, force = true }

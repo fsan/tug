@@ -2307,6 +2307,7 @@ impl AgentSupervisor {
             | A::UpdateClaude
             | A::ClaudeSignIn
             | A::ClaudeLogout
+            | A::SetProvider
             | A::SharedAgentClassify => ControlOutcome::PassThrough,
         }
     }
@@ -5046,6 +5047,26 @@ impl AgentSupervisor {
                 None => return,
             }
         };
+
+        // The provider config is what every spawn applies, so a file that
+        // cannot be resolved is refused before a subprocess is started. Left
+        // to the spawner, the error would look like a crash and spend the
+        // crash budget retrying a file that cannot get better; the card would
+        // report `crash_budget_exhausted` instead of the sentence naming the
+        // bad key.
+        if let Err(err) = tugcore::provider::ProviderPlan::load() {
+            let mut entry = entry_arc.lock().await;
+            if entry.spawn_state == SpawnState::Spawning {
+                entry.spawn_state = SpawnState::Errored;
+                drop(entry);
+                self.session_state.publish_tagged(build_session_state_frame(
+                    tug_session_id,
+                    "errored",
+                    Some(&format!("provider_config: {err}")),
+                ));
+            }
+            return;
+        }
 
         let (input_tx, input_rx) = mpsc::channel::<Frame>(256);
         let (merger_per_session_tx, merger_per_session_rx) = mpsc::channel::<Frame>(256);

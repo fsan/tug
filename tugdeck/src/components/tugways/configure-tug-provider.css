@@ -1,0 +1,45 @@
+/*
+ * ConfigureTug's provider form. The row around it is `TugStepRow`'s (the
+ * projects-folder row's shape); this file styles only what the form stacks in
+ * that row's body slot — one line of method buttons, one line of fields, and
+ * the Save/Cancel pair at the end of that line.
+ *
+ * Held to two lines on purpose: every method costs the same height, so picking
+ * one does not move the rows under it, and the wizard's own step list stays
+ * still while the user decides.
+ */
+
+.configure-tug-provider {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tug-space-sm);
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* The four methods, wrapping rather than shrinking if the panel is narrow. */
+.configure-tug-provider-methods {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--tug-space-sm);
+}
+
+.configure-tug-provider-hint {
+  font-size: 12px;
+  line-height: 1.4;
+  opacity: 0.8;
+}
+
+/* The method's inputs share the line with the Save/Cancel pair: the fields
+ * take the slack, the buttons keep their intrinsic width. */
+.configure-tug-provider-fields {
+  display: flex;
+  align-items: center;
+  gap: var(--tug-space-sm);
+  min-width: 0;
+}
+
+.configure-tug-provider-fields .tug-input {
+  flex: 1 1 0;
+  min-width: 0;
+}

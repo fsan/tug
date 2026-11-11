@@ -927,6 +927,7 @@ export class SessionManager {
     | "permissionMode"
     | "effort"
     | "model"
+    | "providerModel"
     | "additionalDirectories"
     | "pluginPrompts"
   > {
@@ -935,6 +936,9 @@ export class SessionManager {
       permissionMode: this.permissionManager.getMode(),
       effort: this.currentEffort,
       model: this.currentModel,
+      // The provider's required model, when it has no aliases (Ollama). Read
+      // per spawn so a config edit takes effect on the next respawn.
+      providerModel: process.env.TUG_LLM_PROVIDER_MODEL ?? null,
       additionalDirectories: this.additionalDirectories,
       // Read per spawn rather than per session, so an edit to the shipped
       // prompt file takes effect on the next respawn.
@@ -1029,11 +1033,13 @@ export class SessionManager {
       args: args.join(" "),
     });
 
-    // The spawn environment: auth keys scrubbed, and the three variables
-    // tugcode sets per spawn — chief among them `TUG_SESSION_ID`, re-stamped
-    // from this manager's own id rather than inherited, because a rotation
-    // respawns claude without respawning tugcode. See
-    // {@link buildClaudeSpawnEnv}, where the reasoning and its test live.
+    // The spawn environment: auth keys scrubbed under the subscription (a
+    // configured provider keeps its own, which tugcast resolved from
+    // config.toml), and the three variables tugcode sets per spawn — chief
+    // among them `TUG_SESSION_ID`, re-stamped from this manager's own id
+    // rather than inherited, because a rotation respawns claude without
+    // respawning tugcode. See {@link buildClaudeSpawnEnv}, where the
+    // reasoning and its test live.
     const scrubbedEnv = buildClaudeSpawnEnv(
       process.env,
       this.sessionId,

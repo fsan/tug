@@ -9,16 +9,17 @@
 //! "/usage"` runs the command headlessly and prints the whole panel as text,
 //! which we forward verbatim for the deck to parse.
 //!
-//! The Anthropic auth env vars are scrubbed (via
-//! [`super::claude_auth::claude_command`]) so the figures reflect the user's
-//! subscription — the auth path that actually has usage limits — rather than a
-//! stray `ANTHROPIC_API_KEY`.
+//! The fetch always runs on the **subscription** (`super::claude_auth::
+//! subscription_command`), whatever provider the user configured for
+//! sessions: usage limits are a subscription fact, and an API key, Bedrock
+//! or a local endpoint has no `/usage` panel to read. On a machine with no
+//! subscription login the fetch fails and the sheet says so.
 
 use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
-use super::claude_auth::claude_command;
+use super::claude_auth::subscription_command;
 
 /// Hard ceiling on the `claude -p "/usage"` round-trip. The limit gauges come
 /// back in seconds, but the "what's contributing" breakdown walks every local
@@ -64,7 +65,7 @@ pub async fn fetch_usage_text() -> UsageResult {
 }
 
 async fn run_usage_command() -> UsageResult {
-    let mut cmd = claude_command(&["-p", "/usage"]);
+    let mut cmd = subscription_command(&["-p", "/usage"]);
     cmd.kill_on_drop(true);
     let result = match tokio::time::timeout(USAGE_TIMEOUT, cmd.output()).await {
         Ok(result) => result,

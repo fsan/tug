@@ -73,7 +73,11 @@ const SETUP_DONE = `${SETUP} .tug-alert-actions [data-slot="tug-push-button"]`;
 const SIGNIN_ROW = `${SETUP} .configure-tug-step[data-step="signin"]`;
 const SIGNIN_LABEL = `${SIGNIN_ROW} .tug-step-row-label`;
 const SIGNIN_DETAIL = `${SIGNIN_ROW} .tug-step-row-detail`;
-const SIGNIN_CTA = `${SIGNIN_ROW} [data-slot="tug-push-button"]`;
+// The row's primary CTA, not its quieter companion: the login step offers
+// "Use Another Provider…" as a ghost beside the login and retry buttons, and
+// the ghost renders first, so a bare `[data-slot="tug-push-button"]` matches
+// it instead. The primary is the last button in the action cluster.
+const SIGNIN_CTA = `${SIGNIN_ROW} .tug-step-row-action [data-slot="tug-push-button"]:last-of-type`;
 
 /** `Version 2.1.222`, `… — up to date.`, `… — 2.1.226 is available.` */
 const VERSION_LINE = /^Version \d+\.\d+\.\d+/;

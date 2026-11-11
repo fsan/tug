@@ -2839,6 +2839,17 @@ function resolveLaunchOptions(opts: LaunchTugAppOptions): ResolvedLaunch {
     connectPollMs: opts.connectPollMs ?? 100,
     env: {
       ...baseEnv,
+      // The provider choice file, which is machine-wide like the ledgers
+      // below but needs redirecting for two reasons rather than one: a
+      // launch must not READ the developer's choice — a machine configured
+      // for Bedrock or a local endpoint renders the wizard's login step
+      // differently, and every test that asserts the subscription sign-in
+      // would fail on a machine where the feature works — and must not WRITE
+      // it, since driving the wizard's provider form would rewrite the
+      // developer's real choice. Pointing it at this instance's dir gives a
+      // launch an absent file (the subscription default) unless the test
+      // writes one on purpose, and the teardown below reclaims it.
+      TUG_CONFIG_FILE: `${instanceDataDir}/config.toml`,
       // Point the machine-global changes ledger into this launch's
       // per-instance data dir: harness runs must never write attribution
       // rows into the developer's real ~/Library/Application Support/Tug/

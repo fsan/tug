@@ -57,6 +57,12 @@ fn broadcast_auth_result(
         ),
     };
     let Some(cat) = cat else { return };
+    // Which provider the config file selects. The wizard's login row says
+    // "Logged in to Claude" over the subscription and names the provider over
+    // anything else, so the name has to ride the one frame that already settles
+    // that row. `null` means the file could not be resolved — the row then knows
+    // no more about the provider than the probe knew about the login.
+    let provider = tugcore::provider::ProviderPlan::current().ok();
     let body = serde_json::json!({
         "action": "claude_auth_result",
         "loggedIn": logged_in,
@@ -65,6 +71,7 @@ fn broadcast_auth_result(
         "email": email,
         "subscriptionType": subscription_type,
         "authMethod": auth_method,
+        "provider": provider.map(|method| method.as_str()),
     });
     send_control(&cat, body);
 }
@@ -253,6 +260,17 @@ pub struct ActionContext<'a> {
 /// `reset_session`) are handled upstream by `AgentSupervisor::handle_control`
 /// in `feeds/agent_supervisor/` and never reach this function — per [D09]
 /// the supervisor owns the per-session state machine, not the router.
+/// The `set_provider` payload: the wizard's choice, in the shape of the
+/// `[provider]` table it becomes.
+///
+/// `ProviderTable` is the config schema itself rather than a second copy of
+/// it, so a field the wizard can set is a field the file accepts, and a field
+/// renamed on one side is a compile error rather than a silent drop.
+#[derive(serde::Deserialize)]
+struct SetProviderPayload {
+    provider: tugcore::provider::ProviderTable,
+}
+
 pub async fn dispatch_action(action: &str, raw_payload: &[u8], ctx: &ActionContext<'_>) {
     let ActionContext {
         shutdown_tx,
@@ -513,6 +531,54 @@ pub async fn dispatch_action(action: &str, raw_payload: &[u8], ctx: &ActionConte
                 }
                 let state = crate::feeds::claude_auth::probe().await;
                 broadcast_auth_result(cat, state, None);
+            });
+        }
+        Ok(A::SetProvider) => {
+            // The setup wizard's provider form, at the login step. The choice
+            // arrives as the `[provider]` table's own shape and is validated by
+            // the same `resolve` every spawn runs, so a file that saves is a
+            // file a session can run on — and a mistake is answered on the row
+            // that made it rather than on the first Session card. The write is
+            // blocking file IO, hence `spawn_blocking`; the re-probe after it is
+            // what settles the wizard's login row.
+            info!("dispatch_action: provider config write requested");
+            let cat = stream_outputs
+                .get(&FeedId::CONTROL)
+                .map(|(tx, _)| tx.clone());
+            let choice = serde_json::from_slice::<SetProviderPayload>(raw_payload)
+                .map(|payload| payload.provider)
+                .map_err(|err| format!("the provider choice could not be read: {err}"));
+            tokio::spawn(async move {
+                let saved = match choice {
+                    Err(error) => Err(error),
+                    Ok(table) => match tokio::task::spawn_blocking(move || table.save()).await {
+                        Ok(Ok(plan)) => Ok(plan.method()),
+                        Ok(Err(err)) => Err(err.to_string()),
+                        Err(err) => Err(format!("could not write the provider config: {err}")),
+                    },
+                };
+                if let Some(cat) = &cat {
+                    let body = match &saved {
+                        Ok(method) => serde_json::json!({
+                            "action": "provider_config_result",
+                            "ok": true,
+                            "method": method.as_str(),
+                        }),
+                        Err(error) => serde_json::json!({
+                            "action": "provider_config_result",
+                            "ok": false,
+                            "error": error,
+                        }),
+                    };
+                    send_control(cat, body);
+                }
+                // A saved file is a new answer to "can this app run a session?",
+                // so the login row is asked again on it. A refused one changed
+                // nothing, so nothing is asked again.
+                if saved.is_ok() {
+                    let state = crate::feeds::claude_auth::probe().await;
+                    broadcast_auth_result(cat, state, None);
+                }
             });
         }
         Ok(A::SharedAgentClassify) => {

@@ -55,6 +55,46 @@ describe("buildClaudeSpawnEnv", () => {
     expect(env.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING).toBe("true");
   });
 
+  test("a configured provider keeps the auth keys tugcast resolved", () => {
+    // `TUG_LLM_PROVIDER` is tugcast's statement that these variables are the
+    // provider from config.toml, not a stray shell export. Scrubbing them here
+    // would leave an API/Bedrock/Ollama card with no credentials at all.
+    const env = buildClaudeSpawnEnv(
+      {
+        TUG_LLM_PROVIDER: "ollama",
+        TUG_LLM_PROVIDER_MODEL: "qwen3-coder",
+        ANTHROPIC_BASE_URL: "http://localhost:11434",
+        ANTHROPIC_AUTH_TOKEN: "ollama",
+        ANTHROPIC_API_KEY: "",
+        ANTHROPIC_MODEL: "qwen3-coder",
+      },
+      "seg-1",
+      null,
+    );
+    expect(env.TUG_LLM_PROVIDER).toBe("ollama");
+    expect(env.TUG_LLM_PROVIDER_MODEL).toBe("qwen3-coder");
+    expect(env.ANTHROPIC_BASE_URL).toBe("http://localhost:11434");
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBe("ollama");
+    expect(env.ANTHROPIC_API_KEY).toBe("");
+    expect(env.ANTHROPIC_MODEL).toBe("qwen3-coder");
+  });
+
+  test("an explicit subscription is scrubbed like the default", () => {
+    const env = buildClaudeSpawnEnv(
+      {
+        TUG_LLM_PROVIDER: "subscription",
+        ANTHROPIC_API_KEY: "k",
+        ANTHROPIC_AUTH_TOKEN: "t",
+        CLAUDE_CODE_OAUTH_TOKEN: "o",
+      },
+      "seg-1",
+      null,
+    );
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  });
+
   test("the arc variable is set under an arc and cleared without one", () => {
     expect(buildClaudeSpawnEnv({}, "seg-1", "hardening").TUG_ARC).toBe("hardening");
     // Absent is what clears it: the variable belongs to an arc, not a card,

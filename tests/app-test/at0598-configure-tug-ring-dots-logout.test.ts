@@ -13,10 +13,12 @@
  *   2. **The pulse means activity.** An `active` row is the user's turn, not
  *      work in flight, so its dot is `paused` — full, blue, and animating
  *      nothing.
- *   3. **Log Out… on the logged-in row.** A ghost button beside the green
- *      check raises TugLogout's "Log Out of Claude?" confirm over the still-open
- *      wizard. The test presses **Cancel** — never the confirm, which would log
- *      the test machine out — and the wizard is still there, still logged in.
+ *   3. **Log Out… on the logged-in row.** The settled row carries two ghost
+ *      buttons beside the green check — the provider door first, the way out of
+ *      the login last. Pressing Log Out… raises TugLogout's "Log Out of
+ *      Claude?" confirm over the still-open wizard. The test presses **Cancel**
+ *      — never the confirm, which would log the test machine out — and the
+ *      wizard is still there, still logged in.
  *
  * Reached through `dispatchControlAction("configure-tug")`, the exact action
  * the menu item posts, because the blocking wizard is suppressed under the
@@ -42,7 +44,13 @@ const SETUP = '[data-slot="configure-tug"]';
 const ACTIVE_ROW = `${SETUP} .configure-tug-step[data-status="active"]`;
 const ACTIVE_DOT = `${ACTIVE_ROW} [data-state]`;
 const SIGNIN_ROW = `${SETUP} .configure-tug-step[data-step="signin"]`;
-const SIGNIN_BUTTON = `${SIGNIN_ROW} [data-slot="tug-push-button"]`;
+const SIGNIN_ACTION = `${SIGNIN_ROW} .tug-step-row-action`;
+// The settled row has two quieter answers, and the provider door renders
+// first: the way out of the login is the last button in the cluster. `-of-type`
+// rather than `-child` because the green check follows the buttons in the same
+// cluster, so the logout is the last *button*, not the last child.
+const SIGNIN_PROVIDER = `${SIGNIN_ACTION} [data-slot="tug-push-button"]:first-of-type`;
+const SIGNIN_LOGOUT = `${SIGNIN_ACTION} [data-slot="tug-push-button"]:last-of-type`;
 const SETUP_DONE = `${SETUP} .tug-alert-actions [data-slot="tug-push-button"]`;
 const ALERT = '[data-slot="tug-alert"]';
 const ALERT_TITLE = `${ALERT} .tug-alert-title`;
@@ -148,8 +156,15 @@ describe.skipIf(!SHOULD_RUN)("AT0598: ConfigureTug's ring, dots, and Log Out…"
           await overlay.evalJS<string | null>(attr(SIGNIN_ROW, "data-status")),
           "this test needs a logged-in machine",
         ).toBe("done");
-        expect((await overlay.evalJS<string>(text(SIGNIN_BUTTON))).trim()).toBe("Log Out…");
-        await overlay.nativeClickAtElement(SIGNIN_BUTTON);
+        // The provider door stays offered on a settled row: a logged-in user is
+        // the one who may reach a model another way, so the row must not hide
+        // the choice behind a logout.
+        expect(
+          (await overlay.evalJS<string>(text(SIGNIN_PROVIDER))).trim(),
+          "the settled row still offers the provider form",
+        ).toBe("Use Another Provider…");
+        expect((await overlay.evalJS<string>(text(SIGNIN_LOGOUT))).trim()).toBe("Log Out…");
+        await overlay.nativeClickAtElement(SIGNIN_LOGOUT);
         await overlay.waitForCondition<boolean>(present(ALERT), { timeoutMs: 8000 });
         expect((await overlay.evalJS<string>(text(ALERT_TITLE))).trim()).toBe("Log Out of Claude?");
         expect(

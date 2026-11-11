@@ -143,14 +143,19 @@ async fn test_single_session_end_to_end() {
 /// `system_metadata` event claude emits — that field is claude's own
 /// self-report of which auth source it actually used.
 ///
-/// This is the confirmation test for the `fix(auth)` commit that added
-/// `env_remove("ANTHROPIC_API_KEY")` at all three spawn boundaries. If
-/// the developer has `ANTHROPIC_API_KEY` exported in their shell (e.g.
-/// for other API work), the scrubs should strip it before claude ever
-/// sees it, and claude should fall back to `~/.claude.json`.
+/// This is the confirmation test for the subscription scrub: the
+/// harness sets `TUG_CONFIG_FILE` to a scratch path that no test writes,
+/// so `tugcore::provider::ProviderPlan::load` resolves the subscription,
+/// and the plan the spawn boundary applies strips `ANTHROPIC_API_KEY`
+/// before claude ever sees it. (A config that names a provider would
+/// deliberately leave that key in place — a real-claude test on a
+/// configured machine is a different test, and this one pins the
+/// default.) If the developer has `ANTHROPIC_API_KEY` exported in their
+/// shell (e.g. for other API work), the plan's removals should strip it,
+/// and claude should fall back to `~/.claude.json`.
 ///
 /// Intentionally does NOT pre-flight-refuse when `ANTHROPIC_API_KEY` is
-/// set — the whole point of this test is to prove the scrubs work even
+/// set — the whole point of this test is to prove the removals work even
 /// when the parent env is contaminated.
 #[tokio::test]
 #[ignore = "requires TUG_REAL_CLAUDE=1 and a live claude binary"]
@@ -197,11 +202,14 @@ async fn test_subscription_auth_source() {
 
     assert_ne!(
         api_key_source, "ANTHROPIC_API_KEY",
-        "claude authenticated via ANTHROPIC_API_KEY — the spawn-site env \
-         scrub is broken. Expected a subscription-mode source (e.g. \
-         \"none\" or \"claude.ai\"), got per-token API billing instead. \
-         Check env_remove calls in TestTugcast::spawn, \
-         TugcodeSpawner::spawn_child, and spawnClaude in tugcode/src/session.ts."
+        "claude authenticated via ANTHROPIC_API_KEY — the subscription \
+         plan's removals are not reaching the child. Expected a \
+         subscription-mode source (e.g. \"none\" or \"claude.ai\"), got \
+         per-token API billing instead. Check that TUG_CONFIG_FILE points \
+         at a path with no config (the harness sets one), and that \
+         `ProviderPlan` reaches both spawns: the tugcast → tugcode \
+         boundary (TugcodeSpawner::spawn_child) and tugcode's own \
+         respawn in tugcode/src/session.ts."
     );
 
     ws.send_close_session(card_id, tug_session_id).await;

@@ -91,6 +91,7 @@ export const CONTROL_ACTIONS = [
   "update_claude",
   "claude_sign_in",
   "claude_logout",
+  "set_provider",
 ] as const;
 
 /** A CONTROL request action the deck may send. */

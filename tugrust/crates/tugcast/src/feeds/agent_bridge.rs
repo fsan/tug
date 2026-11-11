@@ -428,26 +428,31 @@ impl ChildSpawner for TugcodeSpawner {
                 args = ?args,
                 cwd = %project_dir.display(),
             );
-            // Scrub Anthropic auth env vars so the downstream claude CLI
-            // authenticates via `~/.claude.json` (the user's Max/Pro
-            // subscription) rather than per-token API billing. If the
-            // developer has any of these variables exported for other
-            // work (e.g. direct API scripts), we do NOT want it to leak
-            // into tugcode → claude.
+            // The provider the user selected in `config.toml`, resolved to
+            // environment variables. The plan removes every credential and
+            // base-URL variable the other methods would have inherited, then
+            // sets its own; with no config file it is the subscription and
+            // removes the three auth keys Tug has always scrubbed. Loading it
+            // per spawn means an edit to the file takes effect on the next
+            // spawn without relaunching Tug.
             //
-            // Keep this list in sync with `AUTH_ENV_VARS` in
-            // `tugrust/crates/tugcast/tests/common/catalog.rs` and the
-            // destructure in `tugcode/src/session.ts::spawnClaude`.
-            let mut child = Command::new(&cmd)
+            // The resolved method also rides `TUG_LLM_PROVIDER` to tugcode,
+            // which re-derives claude's environment for every respawn and
+            // must know whether these variables are the configured provider's
+            // or a stray shell export it should scrub.
+            let provider_plan = tugcore::provider::ProviderPlan::load().map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("provider config: {err}"),
+                )
+            })?;
+            let mut command = Command::new(&cmd);
+            command
                 .args(&args)
-                .env_remove("ANTHROPIC_API_KEY")
-                .env_remove("ANTHROPIC_AUTH_TOKEN")
-                .env_remove("CLAUDE_CODE_OAUTH_TOKEN")
                 // Self-identification for the session subprocess chain:
-                // tugcode's `scrubbedEnv` passes this through unmodified
-                // (it strips only the three auth keys above), and claude
-                // forwards its environment to Bash tool calls — so a
-                // skill or CLI run inside this session can read
+                // tugcode's spawn environment passes this through unmodified,
+                // and claude forwards its environment to Bash tool calls — so
+                // a skill or CLI run inside this session can read
                 // `$TUG_SESSION_ID` to know which session it is. This is
                 // load-bearing for `tugtool changes`, which keys the
                 // file-event query on it. The value is the tug session id
@@ -466,7 +471,18 @@ impl ChildSpawner for TugcodeSpawner {
                 .envs(
                     tugcore::instance::resolve_sessions_db_path()
                         .map(|p| (tugcore::instance::ENV_SESSIONS_DB, p)),
-                )
+                );
+            for op in provider_plan.env_ops() {
+                match op {
+                    tugcore::provider::EnvOp::Remove(var) => {
+                        command.env_remove(var);
+                    }
+                    tugcore::provider::EnvOp::Set(key, value) => {
+                        command.env(key, value);
+                    }
+                }
+            }
+            let mut child = command
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())

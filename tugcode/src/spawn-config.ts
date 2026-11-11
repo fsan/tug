@@ -79,7 +79,14 @@ export function resolvePluginDir(): string {
 
 /**
  * The environment a claude spawn runs under: the process environment, minus
- * the auth keys, plus the three variables tugcode sets per spawn.
+ * the auth keys under the subscription, plus the three variables tugcode sets
+ * per spawn.
+ *
+ * **A configured provider keeps its auth keys.** `TUG_LLM_PROVIDER` is set by
+ * tugcast from the user's `config.toml`; when it names anything but
+ * `subscription`, the variables in this process's environment are the ones
+ * that provider needs, and scrubbing them would leave the card with no
+ * credentials at all.
  *
  * Pure and exported so the one fact that used to be silent — which session id
  * a rotated card's Bash calls see — is a test rather than a hope.
@@ -94,9 +101,10 @@ export function resolvePluginDir(): string {
  * rotation lands still holds the old value; `tugtool`'s resolver, not this
  * function, is what makes a stale id harmless.
  *
- * Keep the auth list in sync with `AUTH_ENV_VARS` in
- * `tugrust/crates/tugcast/tests/common/catalog.rs` and the `env_remove` calls
- * in `tugrust/crates/tugcast/src/feeds/agent_bridge.rs`.
+ * The subscription scrub list stays in sync with `AUTH_ENV_VARS` in
+ * `tugrust/crates/tugcast/tests/common/catalog.rs` and
+ * `tugcore::provider::ProviderPlan::legacy_subscription`, which is what
+ * tugcast applies to the tugcode spawn when no config file names a provider.
  */
 export function buildClaudeSpawnEnv(
   processEnv: Record<string, string | undefined>,
@@ -104,15 +112,18 @@ export function buildClaudeSpawnEnv(
   arc: string | null,
   autocompactPct: number | null = null,
 ): Record<string, string | undefined> {
-  const {
-    ANTHROPIC_API_KEY,
-    ANTHROPIC_AUTH_TOKEN,
-    CLAUDE_CODE_OAUTH_TOKEN,
-    ...scrubbedEnv
-  } = processEnv;
-  void ANTHROPIC_API_KEY;
-  void ANTHROPIC_AUTH_TOKEN;
-  void CLAUDE_CODE_OAUTH_TOKEN;
+  // Under the subscription Tug scrubs the three auth keys, so a stray shell
+  // export cannot move a session onto per-token billing. Under a configured
+  // provider the keys are the point: tugcast resolved them from `config.toml`
+  // and set `TUG_LLM_PROVIDER` to say so. Anything else would strip the very
+  // thing that makes an API, Bedrock or Ollama card work.
+  const provider = processEnv.TUG_LLM_PROVIDER;
+  const scrubbedEnv: Record<string, string | undefined> = { ...processEnv };
+  if (provider === undefined || provider === "" || provider === "subscription") {
+    delete scrubbedEnv.ANTHROPIC_API_KEY;
+    delete scrubbedEnv.ANTHROPIC_AUTH_TOKEN;
+    delete scrubbedEnv.CLAUDE_CODE_OAUTH_TOKEN;
+  }
 
   // claude forwards its environment to Bash tool calls, so this is the chain
   // that lets a skill or CLI run inside the session self-identify.
@@ -153,6 +164,15 @@ export interface ClaudeSpawnConfig {
    * is exactly what the `default` selector means, so it records as null.
    */
   model?: string | null;
+  /**
+   * A model the configured provider requires every spawn to use, from
+   * `TUG_LLM_PROVIDER_MODEL` (only a provider with no model aliases — Ollama —
+   * sets it). When present, no `--model` flag is passed: the model already
+   * rides `ANTHROPIC_MODEL` in the environment, and the card's Anthropic-shaped
+   * selector (`sonnet`, `opus`, …) would override it with a name the endpoint
+   * does not serve.
+   */
+  providerModel?: string | null;
   permissionMode: string;
   /**
    * Reasoning-effort level for `--effort` ([#step-4]). When omitted / null,
@@ -354,7 +374,11 @@ export function buildClaudeArgs(config: ClaudeSpawnConfig): string[] {
     args.push("--add-dir", dir);
   }
 
-  if (config.model) {
+  if (config.providerModel) {
+    // The provider's model is already in `ANTHROPIC_MODEL`; see
+    // {@link ClaudeSpawnConfig.providerModel}. Passing `--model` here would
+    // beat it with the card's selector.
+  } else if (config.model) {
     args.push("--model", config.model);
   }
 

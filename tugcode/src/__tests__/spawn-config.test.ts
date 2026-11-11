@@ -207,6 +207,18 @@ describe("buildClaudeArgs", () => {
     const args = buildClaudeArgs(defaultConfig);
     expect(args).not.toContain("--model");
   });
+
+  test("a provider-required model suppresses the card's --model", () => {
+    // Ollama has no `sonnet`/`opus` alias; its configured model already rides
+    // ANTHROPIC_MODEL, so the selector must not beat it with a Claude name.
+    const args = buildClaudeArgs({
+      ...defaultConfig,
+      model: "opus",
+      providerModel: "qwen3-coder",
+    });
+    expect(args).not.toContain("--model");
+    expect(args).not.toContain("opus");
+  });
 });
 
 describe("buildClaudeArgs session commands", () => {

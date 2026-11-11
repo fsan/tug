@@ -78,3 +78,5 @@ tugdeck/dist/
 
 # Python bytecode from the model-eval harness.
 __pycache__/
+
+execution_logs/

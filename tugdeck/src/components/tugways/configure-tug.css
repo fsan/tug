@@ -49,6 +49,15 @@
   gap: var(--tug-space-md);
 }
 
+/* The provider form's row — the login step's other answer. It takes its height
+ * from its content rather than a fixed one: the form is up only while the user
+ * is choosing, so the row growing as it opens is the gesture itself, not a hop
+ * under work in flight. The gap is the detail line's, the same one the
+ * projects folder keeps above its chooser. */
+.configure-tug-step[data-step="signin"] .tug-step-row-body {
+  margin-top: var(--tug-space-sm);
+}
+
 /* Big green success check that takes the button's place on a completed step,
  * keeping the row's left-right balance. */
 .configure-tug-step-check {
