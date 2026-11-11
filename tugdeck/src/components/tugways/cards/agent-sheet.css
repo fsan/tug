@@ -1,0 +1,42 @@
+/* @tug-pairings: none — layout plus two foreground rules, both painting on the
+   composed TugSheet's surface. The segments come from TugChoiceGroup and the
+   buttons from TugPushButton; composed children keep their own tokens [L20].
+
+   @tug-renders-on: --tug7-surface-global-primary-normal-default-rest */
+
+.agent-sheet {
+  font-family: var(--tug-font-family-sans);
+  color: var(--tug7-element-global-text-normal-default-rest);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--tug-space-sm);
+}
+
+/* The lead sentence is the sheet's premise, not a description of a value, so
+   it reads one step quieter than the caption under it. */
+.agent-sheet-lead {
+  font-size: var(--tug-font-size-sm);
+  opacity: 0.75;
+}
+
+.agent-sheet-caption {
+  margin-block-start: var(--tug-space-xs);
+}
+
+/* The chosen agent's description — the channel-note treatment the AI sheet's
+   channels use, so the two sheets read as one family. */
+.agent-sheet-note {
+  font-size: var(--tug-font-size-sm);
+  line-height: 1.4;
+  opacity: 0.75;
+}
+
+/* The consequence of committing: the same caution tone the arc picker gives
+   the one fact in its run that carries a tone. */
+.agent-sheet-consequence {
+  font-size: var(--tug-font-size-sm);
+  line-height: 1.4;
+  color: var(--tug7-element-tone-text-normal-caution-rest);
+  padding-block-start: var(--tug-space-2xs);
+}

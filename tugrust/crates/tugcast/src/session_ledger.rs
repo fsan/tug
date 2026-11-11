@@ -147,6 +147,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tugcast_core::{OverviewAuthor, OverviewPost};
+use tugcore::agent::AgentKind;
 use tugcore::changes_schema::CHANGES_SCHEMA_VERSION;
 use tugcore::claude_home::{ClaudeHome, encode_project_dir};
 
@@ -485,6 +486,14 @@ pub struct SessionRow {
     /// with the TS `SessionRow.line_id`.
     #[serde(default)]
     pub line_id: String,
+    /// The coding agent this segment runs (`claude-code` or `opencode`).
+    /// Defaulted on the wire and read back from a pre-column row as Claude
+    /// Code — the only backend that existed before the column. A resume reads
+    /// it here rather than from the client's payload, because the transcript on
+    /// disk belongs to whichever backend wrote it. Keep in lockstep with the TS
+    /// `SessionRow.agent`.
+    #[serde(default)]
+    pub agent: AgentKind,
     /// Whether this session's `card_id` names a background owner rather than
     /// a deck card ([B04]). Computed at projection from `card_id`; never
     /// stored, so there is one answer and it cannot drift from the id.
@@ -1908,6 +1917,7 @@ impl SessionLedger {
         Self::migrate_sessions_add_demoted(conn)?;
         Self::migrate_sessions_add_hand_back_owed(conn)?;
         Self::migrate_sessions_add_attention_stamps(conn)?;
+        Self::migrate_sessions_add_agent(conn)?;
         Self::migrate_scan_cache_add_resume_columns(conn)?;
         Self::migrate_overview_posts_add_elapsed_ms(conn)?;
         Self::migrate_overview_posts_add_project_dir(conn)?;
@@ -2626,6 +2636,28 @@ impl SessionLedger {
     /// right reading: a session recorded before the flag existed was never
     /// marked private. No-op on a fresh DB (the CREATE TABLE defines it) or
     /// when already migrated.
+    /// Self-healing add of the `agent` column — which coding backend wrote
+    /// this segment. Pre-column rows default to `claude-code`, which is what
+    /// they are: no other backend could have written a transcript before the
+    /// column existed. No-op on a fresh DB or when already migrated.
+    fn migrate_sessions_add_agent(conn: &Connection) -> Result<(), LedgerError> {
+        let cols = Self::table_columns(conn, "sessions")?;
+        if cols.is_empty() {
+            return Ok(());
+        }
+        if !cols.iter().any(|(n, _)| n == "agent") {
+            match conn.execute(
+                "ALTER TABLE sessions ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude-code'",
+                [],
+            ) {
+                Ok(_) => {}
+                Err(err) if is_duplicate_column(&err) => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
+        Ok(())
+    }
+
     fn migrate_sessions_add_private(conn: &Connection) -> Result<(), LedgerError> {
         let cols = Self::table_columns(conn, "sessions")?;
         if cols.is_empty() {
@@ -4938,6 +4970,38 @@ impl SessionLedger {
         line_id: &str,
         tag: Option<&str>,
     ) -> Result<(), LedgerError> {
+        self.record_spawn_as(
+            session_id,
+            workspace_key,
+            project_dir,
+            card_id,
+            now,
+            line_id,
+            tag,
+            AgentKind::ClaudeCode,
+        )
+    }
+
+    /// [`Self::record_spawn`] naming the coding backend that writes this
+    /// segment. The agent is a property of the *new* row alone: a respawn
+    /// that names a different one still writes the column once, and an
+    /// existing row keeps the agent it was born with, because a transcript
+    /// belongs to the backend that produced it.
+    // The parameters are the row: a spawn writes seven columns, and grouping
+    // them into a struct would put a shape between every caller and the table
+    // it is describing.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_spawn_as(
+        &self,
+        session_id: &str,
+        workspace_key: &str,
+        project_dir: &str,
+        card_id: &str,
+        now: i64,
+        line_id: &str,
+        tag: Option<&str>,
+        agent: AgentKind,
+    ) -> Result<(), LedgerError> {
         // The column is a persisted key, so it holds the gateway's spelling,
         // never the one the spawn was typed under ([L29]).
         let project_dir = &stored_project_dir(project_dir);
@@ -5005,11 +5069,15 @@ impl SessionLedger {
             // `line_id` is left out of the conflict arm: a respawn re-enters
             // the line it is already a segment of, and an arm that could
             // rewrite it is the move this model exists to remove.
+            //
+            // `agent` is left out for the same reason. The row exists, so
+            // the backend that wrote it stands; a payload naming another
+            // one is a fresh spawn that got an old id, never a re-write.
             "INSERT INTO sessions (
                 session_id, workspace_key, project_dir,
                 created_at, last_used_at, turn_count,
-                last_user_prompt, state, card_id, line_id
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'live', ?8, ?9)
+                last_user_prompt, state, card_id, line_id, agent
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'live', ?8, ?9, ?10)
              ON CONFLICT(session_id) DO UPDATE SET
                 workspace_key = excluded.workspace_key,
                 project_dir   = excluded.project_dir,
@@ -5029,6 +5097,7 @@ impl SessionLedger {
                 seed_prompt,
                 card_id,
                 line.line_id,
+                agent.as_str(),
             ],
         )?;
         // **At most one live segment per line ([B05]).** A rotation records
@@ -9171,7 +9240,7 @@ fn resume_ancestors(conn: &Connection, session_id: &str) -> Vec<String> {
 const SESSION_COLUMNS: &str = "s.session_id, s.workspace_key, s.project_dir, s.created_at,
      s.last_used_at, s.turn_count, s.last_user_prompt, s.state, s.card_id,
      l.name, l.name_user_set, l.tag, s.synopsis, s.private, s.arc_id, s.arc_name, s.line_id,
-     s.last_turn_end_at, s.last_attended_at";
+     s.agent, s.last_turn_end_at, s.last_attended_at";
 
 /// The `FROM` clause [`SESSION_COLUMNS`] is written against. `LEFT`, not
 /// inner: a row whose line is somehow missing reads back as a row with no
@@ -9220,6 +9289,9 @@ fn scan_row_from_query(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> 
         arc_id: None,
         arc_name: None,
         line_id: row.get::<_, Option<String>>(8)?.unwrap_or_default(),
+        // The external scan walks `~/.claude/projects`, so every row it can
+        // produce is a Claude Code conversation.
+        agent: AgentKind::ClaudeCode,
         // Nor a background owner: this row's `card_id` is `None` above, and
         // an unadopted scan row has no `sessions` row to carry a card at all.
         background: false,
@@ -9412,8 +9484,13 @@ fn row_from_query(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<SessionRow
     let arc_id: Option<String> = row.get(14)?;
     let arc_name: Option<String> = row.get(15)?;
     let line_id: String = row.get::<_, Option<String>>(16)?.unwrap_or_default();
-    let last_turn_end_at: i64 = row.get(17)?;
-    let last_attended_at: i64 = row.get(18)?;
+    let agent: AgentKind = row
+        .get::<_, Option<String>>(17)?
+        .as_deref()
+        .and_then(AgentKind::parse)
+        .unwrap_or_default();
+    let last_turn_end_at: i64 = row.get(18)?;
+    let last_attended_at: i64 = row.get(19)?;
     let state = match state_str.parse::<SessionState>() {
         Ok(s) => s,
         Err(e) => return Ok(Err(e)),
@@ -9436,6 +9513,7 @@ fn row_from_query(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<SessionRow
         arc_id,
         arc_name,
         line_id,
+        agent,
         background,
         last_turn_end_at,
         last_attended_at,

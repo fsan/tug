@@ -8,6 +8,7 @@
 //!
 //! Nothing in this crate may depend on any other Tug crate.
 
+pub mod agent;
 #[cfg(target_os = "macos")]
 pub mod apple_event;
 pub mod call_id;

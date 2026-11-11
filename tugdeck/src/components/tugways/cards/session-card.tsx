@@ -91,13 +91,15 @@ import { formatPathChipText } from "../chrome/path-chip-format";
 import { useSpaceLayerShownSource } from "@/components/chrome/space-layer";
 import {
   SessionRouteIndicatorBadge,
-  CC_VERSION_DOMAIN,
-  CC_VERSION_KEY,
-  CLAUDE_CODE_CHANGELOG_URL,
+  AGENT_VERSION_DOMAIN,
+  agentDocsLabel,
+  agentDocsUrl,
   parseLastKnownVersion,
+  versionKeyFor,
 } from "../chrome/session-route-indicator-badge";
 import { AiChip } from "./ai-chip";
 import { useAiConfigSheet } from "./ai-config-sheet";
+import { useAgentSheet } from "./agent-sheet";
 import { ArcPickerSheet } from "./arc-picker-sheet";
 import { useModel } from "@/lib/use-model";
 import {
@@ -143,6 +145,12 @@ import type { ArgumentHintResolver } from "@/components/tugways/tug-text-editor/
 import type { InlineCommandMatcher } from "@/lib/inline-command-ghost";
 import type { PastedCommandResolver } from "@/components/tugways/tug-text-editor/clipboard-filters";
 import { usePermissionMode } from "@/lib/use-permission-mode";
+import {
+  parseAgentArgument,
+  unsupportedFeatureNote,
+  writePersistedAgent,
+} from "@/lib/agent";
+import { agentLabel, type AgentKind } from "@tugproto/agent";
 import { openPathInOS, openUrlInOS } from "@/lib/os-open";
 import { TugPaneBanner } from "../tug-pane-banner";
 import { TugCopyBadge } from "../tug-copy-badge";
@@ -3249,6 +3257,81 @@ export function SessionCardBody({
     persistModelCatalog(liveModels);
   }, [liveModels]);
 
+  // ---- The coding agent: the route badge's caption and the feature gate ----
+  //
+  // Narrowed subscriptions, so a card re-renders when the agent handshake
+  // lands (once per session) rather than on every metadata tick.
+  const sessionAgent = useSyncExternalStore(
+    sessionMetadataStore.subscribe,
+    useCallback(
+      () => sessionMetadataStore.getSnapshot().agent,
+      [sessionMetadataStore],
+    ),
+  );
+  const sessionFeatures = useSyncExternalStore(
+    sessionMetadataStore.subscribe,
+    useCallback(
+      () => sessionMetadataStore.getSnapshot().features,
+      [sessionMetadataStore],
+    ),
+  );
+
+  // Gate a locally-handled command on the running agent's feature list. A
+  // refusal speaks where the user typed the command: a command that silently
+  // did nothing reads as the app being broken, and a command that ran anyway
+  // would fail on the wire with a frame the user cannot act on.
+  const refuseUnlessAgentSupports = (command: string): boolean => {
+    const note = unsupportedFeatureNote(sessionAgent, sessionFeatures, command);
+    if (note === null) return true;
+    paneBulletinRef.current?.caution(note);
+    return false;
+  };
+
+  /** `/agent` — persist the card's agent and, when it changes, start afresh. */
+  const switchAgent = (next: AgentKind): boolean => {
+    const binding = cardSessionBindingStore.getBinding(cardId);
+    const connection = getConnection();
+    // The write comes first: `sendSpawnSession` resolves the agent from the
+    // tugbank cache at send time, so the persisted value is what makes the
+    // next spawn target the choice.
+    writePersistedAgent(cardId, next);
+    const running = sessionMetadataStore.getSnapshot().agent;
+    if (running === next) return true;
+    if (binding === undefined || connection === null) {
+      paneBulletinRef.current?.caution(
+        `${agentLabel(next)} will run in this card's next session`,
+      );
+      return true;
+    }
+    // A new agent cannot resume the old agent's conversation, so this is a
+    // `/clear` that also changes backends: a fresh line ([P03]), a fresh
+    // tag, then the old subprocess closed once the spawn is away. The old
+    // conversation stays on disk and resumable, on the agent that wrote it.
+    const newSessionId = crypto.randomUUID();
+    const lineId = provisionSpawnLine(newSessionId);
+    sendSpawnSession(
+      connection,
+      cardId,
+      newSessionId,
+      binding.projectDir,
+      "new",
+      "restore-open",
+      provisionSpawnTag(lineId),
+      lineId,
+    );
+    sendCloseSessionKeepingBinding(connection, cardId, binding.tugSessionId);
+    paneBulletinRef.current?.success(
+      `Switched to ${agentLabel(next)} — a new session has started`,
+    );
+    return true;
+  };
+
+  const agentSheet = useAgentSheet({
+    showSheet: cardPickerSheet.showSheet,
+    currentAgent: () => sessionMetadataStore.getSnapshot().agent,
+    onSwitch: switchAgent,
+  });
+
   // `/rewind` turn picker + restore confirm ([#step-7-3]), card-scoped per
   // [D15]. Reads the transcript fresh at open time; the popup already gates
   // the command on having a rewind target, and `openRewindSheet` no-ops if
@@ -3671,11 +3754,13 @@ export function SessionCardBody({
     [cardId],
   );
 
-  // The Claude Code version the sheet footer reports: the live one once the
-  // session has reported it, else the last version any session saw ([L02]).
-  const lastKnownCcVersion = useTugbankValue<string | null>(
-    CC_VERSION_DOMAIN,
-    CC_VERSION_KEY,
+  // The agent version the sheet footer reports: the live one once the session
+  // has reported it, else the last version any session of the same agent saw
+  // ([L02]). Per agent, like the badge — an OpenCode version in Claude Code's
+  // slot would greet the next card with the wrong product's number.
+  const lastKnownAgentVersion = useTugbankValue<string | null>(
+    AGENT_VERSION_DOMAIN,
+    versionKeyFor(sessionAgent),
     parseLastKnownVersion,
     null,
   );
@@ -3736,9 +3821,9 @@ export function SessionCardBody({
           emphasis="ghost"
           role="action"
           data-slot="ai-config-changelog-link"
-          onClick={() => openUrlInOS(CLAUDE_CODE_CHANGELOG_URL)}
+          onClick={() => openUrlInOS(agentDocsUrl(sessionAgent))}
         >
-          {`Claude Code ${sessionMetadataStore.getSnapshot().version ?? lastKnownCcVersion ?? "?"} · changelog`}
+          {`${agentLabel(sessionAgent)} ${sessionMetadataStore.getSnapshot().version ?? lastKnownAgentVersion ?? "?"} · ${agentDocsLabel(sessionAgent)}`}
         </TugPushButton>
       </>
     ),
@@ -3859,7 +3944,26 @@ export function SessionCardBody({
         aiConfigSheet.openAiConfigSheet("mode");
       }
     },
-    rewind: () => rewindSheet.openRewindSheet(),
+    // `/agent` opens the picker; `/agent <kind>` names one and skips it. An
+    // unrecognized name is answered in this card rather than swallowed — the
+    // same rule `/resume <tag>` follows.
+    agent: (args) => {
+      const word = args.trim();
+      if (word.length === 0) {
+        agentSheet.openAgentSheet();
+        return;
+      }
+      const target = parseAgentArgument(word);
+      if (target === null) {
+        paneBulletinRef.current?.caution(`No agent called ${word}`);
+        return;
+      }
+      switchAgent(target);
+    },
+    rewind: () => {
+      if (!refuseUnlessAgentSupports("rewind")) return;
+      rewindSheet.openRewindSheet();
+    },
     // `/resume` opens the overlay to choose a session; `/resume <callsign>`
     // names one and skips it ([P12] — the tag is addressable). An unresolvable
     // callsign is answered in this card rather than swallowed: a silent no-op
@@ -3938,16 +4042,32 @@ export function SessionCardBody({
         originCardId: cardId,
       });
     },
-    context: () => statusRowRef.current?.openContext(),
+    // The context breakdown is claude's own token accounting — a backend that
+    // does not report it has no surface here to render.
+    context: () => {
+      if (!refuseUnlessAgentSupports("context")) return;
+      statusRowRef.current?.openContext();
+    },
     // The two finally mean different things: `/tasks` is the numbered
     // checklist, `/bashes` (upstream: running shells + subagents) is
     // the background-work surface those rows live in here.
     tasks: () => statusRowRef.current?.openTasks(),
     bashes: () => statusRowRef.current?.openJobs(),
-    skills: () => skillsSheet.openSkillsSheet(),
-    agents: () => agentsSheet.openAgentsSheet(),
+    // Skills and hooks are inventories of claude's plugin and settings
+    // machinery; a backend without them has nothing to list.
+    skills: () => {
+      if (!refuseUnlessAgentSupports("skills")) return;
+      skillsSheet.openSkillsSheet();
+    },
+    agents: () => {
+      if (!refuseUnlessAgentSupports("agents")) return;
+      agentsSheet.openAgentsSheet();
+    },
     memory: () => memorySheet.openMemorySheet(),
-    hooks: () => hooksSheet.openHooksSheet(),
+    hooks: () => {
+      if (!refuseUnlessAgentSupports("hooks")) return;
+      hooksSheet.openHooksSheet();
+    },
     usage: () => usageSheet.openUsageSheet(),
     "data-visualization": () => dataVisualizationSheet.openDataVisualizationSheet(),
     // Copy the most recent assistant message (committed transcript only, read
@@ -4116,6 +4236,7 @@ export function SessionCardBody({
     // it applies on respawn like an effort change. No-op on cancel, or when the
     // picker is unavailable.
     "add-dir": () => {
+      if (!refuseUnlessAgentSupports("add-dir")) return;
       const notify = paneBulletinRef.current;
       if (!isPathPickerAvailable()) {
         notify?.caution("Directory picker needs the Tug app");
@@ -4405,6 +4526,7 @@ export function SessionCardBody({
     // the Z2 BTW cell is gone: the placard is where answers live, and `/btw` is
     // both how you ask and how you look.
     btw: (args) => {
+      if (!refuseUnlessAgentSupports("btw")) return;
       if (args.trim().length > 0) sideQuestionStore.ask(args);
       statusRowRef.current?.openSideQuestions();
     },
@@ -5649,6 +5771,7 @@ export function SessionCardBody({
                       <SessionRouteIndicatorBadge
                         codeSessionStore={codeSessionStore}
                         sessionMetadataStore={sessionMetadataStore}
+                        onOpenAgentSheet={agentSheet.openAgentSheet}
                         focusGroup={SESSION_CYCLE_GROUP}
                         focusOrder={SESSION_CYCLE_ORDER_CLAUDE_CODE}
                       />

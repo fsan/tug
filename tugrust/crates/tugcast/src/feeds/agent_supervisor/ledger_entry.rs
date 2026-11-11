@@ -82,6 +82,15 @@ pub struct LedgerEntry {
     /// Reconnects reuse this value so the tugcode side of the session
     /// doesn't flip modes mid-life.
     pub session_mode: SessionMode,
+    /// The coding agent this session runs. Fixed for the entry's life: a
+    /// different agent is a different conversation, so a spawn that names
+    /// another kind is a fresh session, never a toggle. Forwarded as
+    /// `--agent <kind>` only when it is not Claude Code.
+    ///
+    /// The ledger column is the authority across a tugcast restart; the
+    /// bridge reads it here on every respawn, so a crash loop cannot drift
+    /// onto a different backend.
+    pub agent: AgentKind,
     /// Deck-wide / per-card default permission mode tugdeck resolved at the
     /// first `spawn_session` for this session, forwarded to the tugcode
     /// subprocess as `--permission-mode` so the spawned claude starts in the
@@ -497,6 +506,7 @@ impl LedgerEntry {
             workspace_key,
             project_dir,
             session_mode,
+            agent: AgentKind::ClaudeCode,
             permission_mode: None,
             relocate_from: None,
             tag: None,

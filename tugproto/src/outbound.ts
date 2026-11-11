@@ -14,6 +14,7 @@
  */
 
 import type { ContentBlock } from "./inbound";
+import type { AgentFeature, AgentKind } from "./agent";
 
 /** IPC version stamped onto every emitted {@link OutboundMessage}. */
 export const IPC_VERSION = 2;
@@ -350,7 +351,9 @@ export type ErrorFrameSite =
   /** A submit waited out its horizon behind a respawn that never cleared. */
   | "send_respawn_timeout"
   /** The stub replay engine ran past the end of its transcript. */
-  | "stub_replay_exhausted";
+  | "stub_replay_exhausted"
+  /** The opencode ACP backend failed — spawn, handshake, or a prompt. */
+  | "opencode_backend";
 
 export interface ErrorEvent {
   type: "error";
@@ -733,6 +736,19 @@ export interface SessionCapabilities {
    * of showing "?" until the first turn.
    */
   version: string | null;
+  /**
+   * The coding agent this session runs. Absent on a frame emitted before the
+   * field existed, which is a Claude Code session — the only backend there
+   * was. The deck's route badge and the capability gates both read this.
+   */
+  agent?: AgentKind;
+  /**
+   * The Tug surfaces this agent implements, so the deck hides a control its
+   * agent cannot honour instead of offering a button that fails on the wire.
+   * Absent means "the agent's shipped set", which the deck derives from
+   * {@link AgentKind}.
+   */
+  features?: AgentFeature[];
   ipc_version: number;
 }
 

@@ -28,6 +28,7 @@ use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use tugcast_core::protocol::{FeedId, Frame, TugSessionId};
+use tugcore::agent::AgentKind;
 
 use super::agent_supervisor::{
     LedgerEntry, SessionRecord, SessionsRecorder, SpawnState, build_session_state_frame,
@@ -273,6 +274,10 @@ pub trait ChildSpawner: Send + Sync + 'static {
     /// forwarded as `--relocate-from` / `--relocate-from-dir`. `None` for
     /// every session that did not move.
     ///
+    /// `agent` is the coding agent this spawn runs. Forwarded to tugcode as
+    /// `--agent <kind>` only when it is not the historical default, so a
+    /// Claude Code spawn's argv is exactly what it was before agents existed.
+    ///
     /// `crash_respawn` is true on every spawn after the loop's first: the
     /// child before this one died. Forwarded as `--crash-respawn`, so tugcode
     /// re-creates a session claude never wrote to disk instead of resuming
@@ -284,6 +289,7 @@ pub trait ChildSpawner: Send + Sync + 'static {
         project_dir: &Path,
         session_id: &str,
         session_mode: SessionMode,
+        agent: AgentKind,
         resume_claude_session_id: Option<&str>,
         permission_mode: Option<&str>,
         relocate_from: Option<&RelocateOrigin>,
@@ -331,11 +337,16 @@ impl TugcodeSpawner {
 /// and additionally `["--resume-session", <claude_session_id>]` when
 /// `resume_claude_session_id` is `Some` (only emitted for resume spawns
 /// whose claude session id has diverged from `session_id`).
+// The arguments are the argv: one parameter per flag the caller resolved, and
+// grouping them into a struct would put a shape between every reader and the
+// command line it is checking. Same allowance as `ChildSpawner::spawn_child`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_tugcode_command(
     tugcode_path: &Path,
     project_dir: &Path,
     session_id: &str,
     session_mode: SessionMode,
+    agent: AgentKind,
     resume_claude_session_id: Option<&str>,
     permission_mode: Option<&str>,
     relocate_from: Option<&RelocateOrigin>,
@@ -361,6 +372,12 @@ pub(crate) fn build_tugcode_command(
     args.push(session_id.to_string());
     args.push("--session-mode".to_string());
     args.push(session_mode.as_flag_value().to_string());
+    // The backend this spawn runs. Absent means Claude Code, so the historical
+    // path's argv stays byte-identical.
+    if agent != AgentKind::ClaudeCode {
+        args.push("--agent".to_string());
+        args.push(agent.as_str().to_string());
+    }
     // A directory change's origin rides beside `--session-mode new`: tugcode
     // forks from it until the fork's JSONL exists. Absent, the argv is exactly
     // what it was before directory changes existed.
@@ -394,6 +411,7 @@ impl ChildSpawner for TugcodeSpawner {
         project_dir: &Path,
         session_id: &str,
         session_mode: SessionMode,
+        agent: AgentKind,
         resume_claude_session_id: Option<&str>,
         permission_mode: Option<&str>,
         relocate_from: Option<&RelocateOrigin>,
@@ -411,6 +429,7 @@ impl ChildSpawner for TugcodeSpawner {
                 &project_dir,
                 &session_id,
                 session_mode,
+                agent,
                 resume_claude_session_id.as_deref(),
                 permission_mode.as_deref(),
                 relocate_from.as_ref(),
@@ -480,6 +499,18 @@ impl ChildSpawner for TugcodeSpawner {
                     tugcore::provider::EnvOp::Set(key, value) => {
                         command.env(key, value);
                     }
+                }
+            }
+            // Tug configures opencode from the same `[provider]` table it uses
+            // for Claude Code. The document rides the environment because
+            // `opencode acp`'s child process reads `OPENCODE_CONFIG_CONTENT`
+            // before it starts its private server, and tugcode hands its whole
+            // environment down. The subscription method contributes nothing:
+            // opencode cannot borrow Claude Code's Keychain login and must find
+            // its own in `opencode auth login`.
+            if agent == AgentKind::Opencode {
+                if let Some(content) = tugcore::agent::opencode_config_content(&provider_plan) {
+                    command.env("OPENCODE_CONFIG_CONTENT", content);
                 }
             }
             let mut child = command
@@ -859,6 +890,14 @@ pub async fn run_session_bridge(
             entry.relocate_from.clone()
         };
 
+        // Which backend this session runs. It is fixed for the entry's life —
+        // a different agent is a different conversation, not a setting — but
+        // it is read here beside the mode so every respawn gets it.
+        let agent = {
+            let entry = ledger_entry.lock().await;
+            entry.agent
+        };
+
         // Spawn subprocess — interruptible by cancel so
         // `close_session` can tear down a stalled spawner.
         tracing::info!(
@@ -874,6 +913,7 @@ pub async fn run_session_bridge(
                 project_dir.as_path(),
                 session_id_str.as_str(),
                 session_mode,
+                agent,
                 resume_claude_session_id.as_deref(),
                 permission_mode.as_deref(),
                 relocate_from.as_ref(),
@@ -2328,6 +2368,10 @@ async fn relay_session_io_tracked(
                                 let card_id = card_id_for_ledger.to_owned();
                                 let tag = tag.clone();
                                 let line_id = entry_line_id.clone();
+                                let agent = {
+                                    let entry = ledger_entry.lock().await;
+                                    entry.agent
+                                };
                                 offload_recorder(sessions_recorder, move |r| {
                                     r.record(SessionRecord {
                                         session_id: &record_id,
@@ -2336,6 +2380,7 @@ async fn relay_session_io_tracked(
                                         card_id: &card_id,
                                         tag: tag.as_deref(),
                                         line_id: line_id.as_deref(),
+                                        agent,
                                     })
                                 })
                                 .await;
@@ -6706,6 +6751,7 @@ mod tests {
             Path::new("/work/alpha"),
             "sess-alpha-uuid",
             SessionMode::New,
+            AgentKind::ClaudeCode,
             None,
             None,
             None,
@@ -6731,6 +6777,7 @@ mod tests {
             Path::new("/work/beta"),
             "sess-beta-uuid",
             SessionMode::New,
+            AgentKind::ClaudeCode,
             None,
             None,
             None,
@@ -6762,6 +6809,7 @@ mod tests {
             Path::new("/work/a"),
             "sess-a",
             SessionMode::New,
+            AgentKind::ClaudeCode,
             None,
             None,
             None,
@@ -6771,6 +6819,7 @@ mod tests {
             Path::new("/work/b"),
             "sess-b",
             SessionMode::New,
+            AgentKind::ClaudeCode,
             None,
             None,
             None,
@@ -6790,6 +6839,7 @@ mod tests {
             Path::new("/work/x"),
             "sess-x",
             SessionMode::Resume,
+            AgentKind::ClaudeCode,
             None,
             None,
             None,
@@ -6814,6 +6864,7 @@ mod tests {
             Path::new("/work/y"),
             "sess-y-tug-uuid",
             SessionMode::Resume,
+            AgentKind::ClaudeCode,
             Some("claude-internal-id-7"),
             None,
             None,
@@ -6842,6 +6893,7 @@ mod tests {
             Path::new("/work/z"),
             "sess-z",
             SessionMode::Resume,
+            AgentKind::ClaudeCode,
             None,
             None,
             None,
@@ -6863,6 +6915,7 @@ mod tests {
             Path::new("/work/p"),
             "sess-p",
             SessionMode::New,
+            AgentKind::ClaudeCode,
             None,
             Some("plan"),
             None,
@@ -6887,6 +6940,7 @@ mod tests {
             Path::new("/work/b"),
             "sess-moved",
             SessionMode::New,
+            AgentKind::ClaudeCode,
             None,
             None,
             Some(&origin),
@@ -6912,6 +6966,7 @@ mod tests {
             Path::new("/work/b"),
             "sess-moved",
             SessionMode::New,
+            AgentKind::ClaudeCode,
             None,
             None,
             None,
@@ -6936,6 +6991,7 @@ mod tests {
             Path::new("/work/q"),
             "sess-q",
             SessionMode::New,
+            AgentKind::ClaudeCode,
             None,
             None,
             None,
@@ -7130,6 +7186,7 @@ mod tests {
             _project_dir: &std::path::Path,
             _session_id: &str,
             _session_mode: SessionMode,
+            _agent: AgentKind,
             _resume_claude_session_id: Option<&str>,
             _permission_mode: Option<&str>,
             _relocate_from: Option<&RelocateOrigin>,
@@ -7250,6 +7307,7 @@ mod tests {
                 std::path::Path::new("."),
                 "sess-ignores-term",
                 SessionMode::New,
+                AgentKind::ClaudeCode,
                 None,
                 None,
                 None,
@@ -7313,6 +7371,7 @@ mod tests {
                 dir.path(),
                 "tug-sess-xyz",
                 SessionMode::New,
+                AgentKind::ClaudeCode,
                 None,
                 None,
                 None,
@@ -7360,6 +7419,7 @@ mod tests {
                     dir.path(),
                     "tug-sess-xyz",
                     SessionMode::Resume,
+                    AgentKind::ClaudeCode,
                     Some("claude-seg-2"),
                     None,
                     None,

@@ -11,7 +11,11 @@
  *      magnification.
  *   2. **Prompt Editor** — typography, view toggles, tab policy, and
  *      submit-key policy for the prompt editor.
- *   3. **AI Model** — the deck-wide default model / reasoning effort /
+ *   3. **Coding Agent** — the backend new cards spawn (`Claude Code` or
+ *      `OpenCode`). A card that has chosen an agent of its own keeps it; this
+ *      is the seed for a card with nothing persisted. Changing it restarts
+ *      nothing: an agent is fixed at spawn, and no open session re-spawns.
+ *   4. **AI Model** — the deck-wide default model / reasoning effort /
  *      permission mode new cards adopt on first open. The control is
  *      {@link AiConfigEditor} — the very component the Session card's mixer
  *      sheet shows, not a copy of it — bound to the deck defaults via
@@ -59,6 +63,22 @@ import {
   type AiConfigBaseline,
 } from "@/lib/ai-config";
 import { createNumberFormatter } from "@/lib/tug-format";
+import { useTugbankValue } from "@/lib/use-tugbank-value";
+import { getTugbankClient } from "@/lib/tugbank-singleton";
+import {
+  AGENT_DEFAULT_DOMAIN,
+  AGENT_DEFAULT_KEY,
+  AGENT_DESCRIPTIONS,
+  parsePersistedAgent,
+} from "@/lib/agent";
+import {
+  AGENT_KINDS,
+  AGENT_LABELS,
+  DEFAULT_AGENT_KIND,
+  isAgentKind,
+  type AgentKind,
+} from "@tugproto/agent";
+import { putDefaultAgent } from "@/settings-api";
 import "./settings-session-card-body.css";
 
 /**
@@ -67,6 +87,21 @@ import "./settings-session-card-body.css";
  * the formatter identity stays stable across renders.
  */
 const MAGNIFICATION_FORMATTER = createNumberFormatter({ decimals: 2 });
+
+/**
+ * The deck-default coding agent, as the Settings row reads it. A card with no
+ * per-card value of its own spawns with this. Module-level so the
+ * `useTugbankValue` parse cache keeps a stable identity.
+ */
+function parseDefaultAgent(entry: Parameters<typeof parsePersistedAgent>[0]): AgentKind {
+  return parsePersistedAgent(entry) ?? DEFAULT_AGENT_KIND;
+}
+
+/** The two agent segments, shared by every render. */
+const DEFAULT_AGENT_ITEMS = AGENT_KINDS.map((kind) => ({
+  value: kind,
+  label: AGENT_LABELS[kind],
+}));
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -165,6 +200,29 @@ export function SettingsSessionCardBody() {
 
   const aiFocusGroup = useId();
 
+  // ---- The deck-default coding agent ----
+  //
+  // Read through the same tugbank cache the spawn path reads, so the row and
+  // every Session card's next spawn agree on what a default is. A per-card
+  // value still wins at spawn — this is only the value a card adopts when it
+  // has none of its own, which is why changing it disturbs no open card.
+  const defaultAgent = useTugbankValue<AgentKind>(
+    AGENT_DEFAULT_DOMAIN,
+    AGENT_DEFAULT_KEY,
+    parseDefaultAgent,
+    DEFAULT_AGENT_KIND,
+  );
+  const agentChoiceId = useId();
+  const onDefaultAgent = (value: string): void => {
+    if (!isAgentKind(value)) return;
+    getTugbankClient()?.setLocalValue(
+      AGENT_DEFAULT_DOMAIN,
+      AGENT_DEFAULT_KEY,
+      { kind: "string", value },
+    );
+    putDefaultAgent(value);
+  };
+
   // Stable senders for the controls; the chain dispatches land on the
   // responder scope registered below.
   const fontPopupId = useId();
@@ -196,6 +254,7 @@ export function SettingsSessionCardBody() {
       [softTabsId]: (v: boolean) => editorStore.set({ softTabs: v }),
     },
     selectValue: {
+      [agentChoiceId]: onDefaultAgent,
       [returnKeyId]: (v: string) =>
         editorStore.set({ returnKeyAction: v as "submit" | "newline" }),
       [enterKeyId]: (v: string) =>
@@ -356,6 +415,34 @@ export function SettingsSessionCardBody() {
                   {`• ${key} ${effect}`}
                 </TugLabel>
               ))}
+            </div>
+          </div>
+        </TugBox>
+
+        <TugBox
+          label="Coding Agent"
+          labelPosition="legend"
+          variant="bordered"
+          className="settings-session-card-group"
+        >
+          {/* The backend new cards spawn. A card that has picked its own agent
+              keeps it, so this row only seeds cards with nothing persisted of
+              their own — the same rule the AI Model defaults below follow. */}
+          <div className="settings-session-card-agent">
+            <TugChoiceGroup
+              className="settings-session-card-agent-choice"
+              size="sm"
+              senderId={agentChoiceId}
+              value={defaultAgent}
+              aria-label="Default coding agent"
+              data-testid="settings-default-agent"
+              items={DEFAULT_AGENT_ITEMS}
+            />
+            <div
+              className="settings-session-card-agent-note"
+              data-testid="settings-default-agent-note"
+            >
+              {AGENT_DESCRIPTIONS[defaultAgent]}
             </div>
           </div>
         </TugBox>

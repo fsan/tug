@@ -347,6 +347,7 @@ impl AgentSupervisor {
         tug_session_id: TugSessionId,
         project_dir_str: String,
         session_mode: SessionMode,
+        agent: AgentKind,
         permission_mode: Option<String>,
         tag: Option<String>,
         line_id: Option<String>,
@@ -672,6 +673,17 @@ impl AgentSupervisor {
                 // preserved across reconnects; `record_spawn` claims it
                 // authoritatively when the bridge promotes the session.
                 entry.tag = tag;
+            }
+            // The backend is fixed for a conversation's life, so it is stamped
+            // only where a conversation can still be born: a fresh insert, or
+            // an idle entry with no transcript to resume. A resume that named a
+            // different agent keeps the one its transcript belongs to — the
+            // alternative is handing a Claude Code JSONL to opencode, or the
+            // reverse, and calling that a resume.
+            if inserted
+                || (entry.spawn_state == SpawnState::Idle && entry.claude_session_id.is_none())
+            {
+                entry.agent = agent;
             }
             // The line the entry is on ([P03]/[P04]). The payload's is the
             // authority — the deck mints it from the drop on a fresh spawn and

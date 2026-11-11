@@ -19,6 +19,7 @@ import type {
 } from "@/lib/session-metadata-store";
 import { modelIdToSelector } from "@/lib/model-picker-data";
 import { DEFAULT_EFFORT_LEVEL } from "@/lib/effort";
+import { CLAUDE_CODE_FEATURES } from "@tugproto/agent";
 import {
   AI_CONFIG_DOMAIN,
   AI_CONFIG_LAST_ROW_KEY,
@@ -253,6 +254,8 @@ describe("resolveAiConfigSources", () => {
       slashCommands: [],
       models: CATALOG,
       effort: null,
+      agent: "claude-code",
+      features: CLAUDE_CODE_FEATURES,
       ...over,
     };
   }

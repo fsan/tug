@@ -68,6 +68,10 @@ export { isInboundMessage } from "@tugproto/inbound";
 // `@tugproto/outbound` and re-exported here, like the inbound contract above.
 export * from "@tugproto/outbound";
 
+// The coding-agent vocabulary — shared with tugdeck, which learns this
+// session's agent from `session_capabilities`.
+export * from "@tugproto/agent";
+
 // Type guards. `isInboundMessage` is the shared, verb-list-derived guard
 // (re-exported at the top of this file from `@tugproto/inbound`); the per-type
 // guards below narrow a known `InboundMessage` to a specific verb.

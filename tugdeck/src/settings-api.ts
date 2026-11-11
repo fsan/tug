@@ -19,6 +19,7 @@ import type { CardStateBag, RegionScrollSnapshot } from "./layout-tree";
 import type { TugbankClient, TaggedValue } from "./lib/tugbank-client";
 import { tugDevLogStore } from "./lib/tug-dev-log-store/tug-dev-log-store";
 import { PERMISSION_MODE_DOMAIN } from "./lib/permission-mode";
+import { AGENT_DEFAULT_DOMAIN, AGENT_DEFAULT_KEY } from "./lib/agent";
 import { MODEL_DOMAIN, PLAN_REVIEW_LAST_DOMAIN } from "./lib/model-domains";
 import { TEXT_CARD_DOMAIN } from "./lib/text-card-settings";
 import { IMAGE_CARD_DOMAIN } from "./lib/image-card-settings";
@@ -1056,6 +1057,24 @@ export function putDefaultPermissionMode(mode: string): void {
     body: JSON.stringify({ kind: "string", value: mode }),
   }).catch((err) => {
     console.warn("[settings] PUT defaultPermissionMode failed:", err);
+  });
+}
+
+// ── Default coding agent ────────────────────────────────────────────────────
+
+/**
+ * PUT the deck-wide default coding agent to tugbank (fire-and-forget). The
+ * value is a bare agent kind (e.g. `"opencode"`) under
+ * `dev.tugapp.agent/default`. New cards adopt it at spawn; see
+ * `resolveSeedAgent` in `lib/agent.ts`.
+ */
+export function putDefaultAgent(agent: string): void {
+  fetch(`/api/defaults/${AGENT_DEFAULT_DOMAIN}/${AGENT_DEFAULT_KEY}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: "string", value: agent }),
+  }).catch((err) => {
+    console.warn("[settings] PUT defaultAgent failed:", err);
   });
 }
 

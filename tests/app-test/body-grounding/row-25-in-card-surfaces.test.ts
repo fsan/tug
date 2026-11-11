@@ -268,7 +268,7 @@ describe.skipIf(!SHOULD_RUN)("body-grounding row 25: in-card surfaces draw whole
         await readInCard(app, "the composer's context menu", CONTEXT_MENU, () => rightClick(PROMPT_INPUT), () => app.nativeKey("Escape"));
 
         // The badge's report opens on a right-click; a left click opens the
-        // changelog in the system browser.
+        // coding agent picker.
         await readInCard(app, "the route report", ROUTE_REPORT, () => rightClick(ROUTE_BADGE), () => app.nativeKey("Escape"));
       } finally {
         await app.close();

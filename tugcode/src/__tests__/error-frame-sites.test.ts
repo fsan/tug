@@ -188,6 +188,7 @@ describe("error frame sites", () => {
       "post_handshake_exit",
       "fresh_init_exit",
       "drain_eof_open_turn",
+      "opencode_backend",
       "send_after_eof",
       "send_ready_timeout",
       "send_respawn_timeout",

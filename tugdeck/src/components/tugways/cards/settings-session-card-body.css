@@ -1,11 +1,12 @@
 /* ----------------------------------------------------------------------------
    .settings-session-card — the Session Card settings panel
    ----------------------------------------------------------------------------
-   Three stacked groups: Response (transcript magnification plus the
+   Four stacked groups: Response (transcript magnification plus the
    inter-entry margin slider), Prompt Editor (typography, view toggles, and
-   submit-key policy), and AI Model (deck-default chips). Hosted by the
-   Settings card's Session Card section. Each group is a bordered TugBox with
-   a legend painted on the border, its controls left-aligned inside.
+   submit-key policy), Coding Agent (the deck-default backend), and AI Model
+   (deck-default chips). Hosted by the Settings card's Session Card section.
+   Each group is a bordered TugBox with a legend painted on the border, its
+   controls left-aligned inside.
    ----------------------------------------------------------------------------- */
 
 .settings-session-card {
@@ -80,6 +81,23 @@
    the effort track to span the box. */
 .settings-session-card-ai {
   width: 100%;
+}
+
+/* The default-agent row: the two segments over the chosen one's description —
+   the same read the `/agent` sheet gives, so a default and a per-card choice
+   are described by one sentence. */
+.settings-session-card-agent {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--tug-space-xs);
+  width: 100%;
+}
+
+.settings-session-card-agent-note {
+  font-size: var(--tug-font-size-sm);
+  line-height: 1.4;
+  opacity: 0.75;
 }
 
 /* Typography popups on one row. */

@@ -616,6 +616,55 @@ describe("SessionMetadataStore handshake command catalog (from the drop)", () =>
     store.dispose();
   });
 
+  test("session_capabilities `agent` and `features` populate the route and the gates", () => {
+    const feedStore = new MockFeedStore();
+    const store = new SessionMetadataStore(feedStore as never, FEED_ID as never);
+
+    feedStore.emit(FEED_ID, {
+      type: "session_capabilities",
+      models: [],
+      commands: [],
+      agent: "opencode",
+      features: ["replay", "cost"],
+    });
+    const snap = store.getSnapshot();
+    expect(snap.agent).toBe("opencode");
+    expect([...snap.features]).toEqual(["replay", "cost"]);
+
+    store.dispose();
+  });
+
+  test("a handshake with no agent is a Claude Code session, and its features follow the kind", () => {
+    const feedStore = new MockFeedStore();
+    const store = new SessionMetadataStore(feedStore as never, FEED_ID as never);
+
+    // An older bridge emits neither field. Absent must mean "Claude Code, all
+    // its surfaces", not "unknown" — every card that existed before the choice
+    // was made is in this shape.
+    feedStore.emit(FEED_ID, { type: "session_capabilities", models: [], commands: [] });
+    const snap = store.getSnapshot();
+    expect(snap.agent).toBe("claude-code");
+    expect(snap.features).toContain("rewind");
+
+    store.dispose();
+  });
+
+  test("an unknown feature name is dropped rather than offered blindly", () => {
+    const feedStore = new MockFeedStore();
+    const store = new SessionMetadataStore(feedStore as never, FEED_ID as never);
+
+    feedStore.emit(FEED_ID, {
+      type: "session_capabilities",
+      models: [],
+      commands: [],
+      agent: "claude-code",
+      features: ["rewind", "telepathy"],
+    });
+    expect([...store.getSnapshot().features]).toEqual(["rewind"]);
+
+    store.dispose();
+  });
+
   test("a later empty system_metadata does NOT wipe the handshake catalog", () => {
     const feedStore = new MockFeedStore();
     const store = new SessionMetadataStore(feedStore as never, FEED_ID as never);

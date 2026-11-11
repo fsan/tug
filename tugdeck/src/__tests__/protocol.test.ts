@@ -275,6 +275,29 @@ describe("session CONTROL frame builders", () => {
     expect("tag" in payload).toBe(false);
   });
 
+  test("encodeSpawnSession forwards the coding agent as the ninth field", () => {
+    const frame = encodeSpawnSession(
+      "card-1",
+      "sess-1",
+      "/work/alpha",
+      "new",
+      "plan",
+      "azure-heron",
+      "line-9",
+      undefined,
+      "opencode",
+    );
+    const payload = parsePayload(frame);
+    expect(payload.agent).toBe("opencode");
+  });
+
+  test("encodeSpawnSession omits agent when not provided, so a pre-agent payload stays byte-identical", () => {
+    const payload = parsePayload(
+      encodeSpawnSession("card-1", "sess-1", "/work/alpha", "new", "plan"),
+    );
+    expect("agent" in payload).toBe(false);
+  });
+
   test("encodeCloseSession produces a CONTROL frame with card_id and tug_session_id", () => {
     const frame = encodeCloseSession("card-1", "sess-1");
     expect(frame.feedId).toBe(FeedId.CONTROL);

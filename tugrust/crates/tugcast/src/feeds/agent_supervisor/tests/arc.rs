@@ -832,6 +832,7 @@ impl ChildSpawner for RecordingSpawner {
         _project_dir: &std::path::Path,
         _session_id: &str,
         _session_mode: SessionMode,
+        _agent: AgentKind,
         _resume_claude_session_id: Option<&str>,
         permission_mode: Option<&str>,
         _relocate_from: Option<&crate::feeds::agent_bridge::RelocateOrigin>,

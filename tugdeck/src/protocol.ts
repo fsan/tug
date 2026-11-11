@@ -15,6 +15,7 @@
 
 import type { InboundMessage, ReplayWindow } from "@tugproto/inbound";
 import type { ControlAction } from "@tugproto/control";
+import type { AgentKind } from "@tugproto/agent";
 import type { ReplayRequestReason } from "./lib/reload-reasons";
 
 /** Feed identifiers for different data streams (open u8 namespace) */
@@ -123,6 +124,15 @@ export interface SessionRow {
    * in lockstep with the Rust `SessionRow.line_id`.
    */
   line_id: string;
+  /**
+   * The coding agent this segment runs (`claude-code` or `opencode`). A row
+   * recorded before the column existed reads back as `claude-code`, the only
+   * backend that could have written it. An agent is fixed for a conversation's
+   * life: a resume runs the agent that wrote the transcript, whatever the
+   * card's current choice may be. Keep in lockstep with the Rust
+   * `SessionRow.agent`.
+   */
+  agent?: AgentKind;
   workspace_key: string;
   project_dir: string;
   created_at: number;
@@ -685,6 +695,11 @@ export type SpawnSessionMode = "new" | "resume";
  * directory change: tugcast forks that session's conversation into
  * `projectDir` and closes it once the new one is acknowledged. Omitted for
  * every other spawn.
+ *
+ * `agent` names the coding backend this spawn runs (`"claude-code"` /
+ * `"opencode"`). Omitted when it is the default, which is also what an older
+ * client sends — tugcast reads an absent field as Claude Code, so the
+ * historical payload stays byte-identical.
  */
 export function encodeSpawnSession(
   cardId: string,
@@ -695,6 +710,7 @@ export function encodeSpawnSession(
   tag?: string,
   lineId?: string,
   relocateFrom?: string,
+  agent?: string,
 ): Frame {
   const payload: Record<string, string> = {
     card_id: cardId,
@@ -713,6 +729,9 @@ export function encodeSpawnSession(
   }
   if (relocateFrom !== undefined) {
     payload.relocate_from = relocateFrom;
+  }
+  if (agent !== undefined) {
+    payload.agent = agent;
   }
   return controlFrame("spawn_session", payload);
 }

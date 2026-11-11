@@ -1467,6 +1467,11 @@ async fn intercept_session_control(
         ControlOutcome::Error(ControlError::MissingLineId) => ControlIntercept::HandledError {
             detail: "missing_line_id",
         },
+        ControlOutcome::Error(ControlError::UnknownAgent { .. }) => {
+            ControlIntercept::HandledError {
+                detail: "unknown_agent",
+            }
+        }
     }
 }
 

@@ -10,8 +10,12 @@ import {
   writeLineAndExit,
 } from "./ipc.ts";
 import { IPC_VERSION, isProtocolInit, isUserMessage } from "./types.ts";
+import type { AgentKind } from "./types.ts";
+import { DEFAULT_AGENT_KIND, parseAgentKind } from "@tugproto/agent";
 import { dispatchInbound } from "./inbound-dispatch.ts";
+import type { AgentSession } from "./agent-session.ts";
 import { SessionManager, resolvePluginDir } from "./session.ts";
+import { OpencodeSession } from "./opencode/session.ts";
 import { isPermissionMode, type PermissionMode } from "./permissions.ts";
 import {
   loadTranscript,
@@ -107,6 +111,10 @@ let crashRespawn = false;
 // `stub-replay.ts` instead of spawning claude. Test-only;
 // production tugcode never sees this flag.
 let stubTranscriptPath: string | undefined;
+// `--agent <kind>` names the coding backend this bridge runs: `claude-code`
+// (the default, and what an absent flag means) or `opencode`, which speaks ACP
+// via `opencode acp`. tugcast forwards it from the spawn payload's `agent`.
+let agent: AgentKind = DEFAULT_AGENT_KIND;
 const args = Bun.argv.slice(2); // Skip bun and script path
 
 // `tugcode segment <file-or-dir>` — the real-corpus contract's tugcode
@@ -212,6 +220,12 @@ for (let i = 0; i < args.length; i++) {
     // session with a bogus mode; the manager keeps its "default" baseline.
     if (isPermissionMode(raw)) permissionMode = raw;
     i++;
+  } else if (args[i] === "--agent" && i + 1 < args.length) {
+    // An unknown name falls back to the default rather than failing the
+    // spawn: the flag is a selector, and a selector that names nothing the
+    // bridge knows means "the one it always ran".
+    agent = parseAgentKind(args[i + 1]);
+    i++;
   } else if (args[i].startsWith("--stub-transcript=")) {
     stubTranscriptPath = args[i].slice("--stub-transcript=".length);
   } else if (args[i] === "--stub-transcript" && i + 1 < args.length) {
@@ -251,13 +265,13 @@ if (relocateFrom !== undefined || relocateFromDir !== undefined) {
 }
 
 console.log(
-  `Starting tugcode (projectDir: ${projectDir}, sessionId: ${sessionId}, sessionMode: ${sessionMode}${resumeSessionId ? `, resumeSessionId: ${resumeSessionId}` : ""}${relocation ? `, relocateFrom: ${relocation.parentClaudeId} in ${relocation.parentProjectDir}` : ""}${permissionMode ? `, permissionMode: ${permissionMode}` : ""}${stubTranscriptPath ? `, stubTranscript: ${stubTranscriptPath}` : ""})`,
+  `Starting tugcode (projectDir: ${projectDir}, sessionId: ${sessionId}, sessionMode: ${sessionMode}${resumeSessionId ? `, resumeSessionId: ${resumeSessionId}` : ""}${relocation ? `, relocateFrom: ${relocation.parentClaudeId} in ${relocation.parentProjectDir}` : ""}${permissionMode ? `, permissionMode: ${permissionMode}` : ""}${agent !== DEFAULT_AGENT_KIND ? `, agent: ${agent}` : ""}${stubTranscriptPath ? `, stubTranscript: ${stubTranscriptPath}` : ""})`,
 );
 
 // Session manager (initialized after protocol handshake). Only
-// populated in the live (claude-spawning) path; stub-replay mode
+// populated in the live (agent-spawning) path; stub-replay mode
 // leaves this null and routes all messages through `stubReplay`.
-let sessionManager: SessionManager | null = null;
+let sessionManager: AgentSession | null = null;
 let stubReplay: StubReplayEngine | null = null;
 
 /**
@@ -444,14 +458,24 @@ async function main() {
         settings: claudeCodeSettings,
       });
 
-      // Create session manager and initialize claude process
-      sessionManager = new SessionManager(
-        projectDir,
-        sessionId,
-        sessionMode,
-        resumeSessionId,
-        { contextBreakdownEmitter, initialPermissionMode: permissionMode, relocation, crashRespawn },
-      );
+      // Create the backend this session runs and initialize its process.
+      // The claude path is unchanged; the opencode path speaks ACP instead.
+      sessionManager =
+        agent === "opencode"
+          ? new OpencodeSession({
+              projectDir,
+              sessionId,
+              sessionMode,
+              resumeSessionId,
+              agent,
+            })
+          : new SessionManager(
+              projectDir,
+              sessionId,
+              sessionMode,
+              resumeSessionId,
+              { contextBreakdownEmitter, initialPermissionMode: permissionMode, relocation, crashRespawn },
+            );
 
       // Send protocol_ack first (with placeholder session_id)
       writeLine({
@@ -507,7 +531,7 @@ async function main() {
         // Background claude spawn. The IPC loop continues; the
         // returned Promise is the readiness gate that
         // `handleUserMessage` awaits.
-        const claudeReady = sessionManager.spawnClaudeAndWatch();
+        const claudeReady = sessionManager.spawnAgentAndWatch();
         // Surface unhandled rejection from the spawn promise to
         // stderr so a synchronous exception inside `spawnClaude`
         // (e.g. a missing claude binary) doesn't go silent. The

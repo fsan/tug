@@ -20,7 +20,7 @@ I’ve made everything just like I want it. My hope is that the things I chose t
 
 ### What else you’ll need
 
-- A paid Claude plan that includes Claude Code, such as Pro or Max (the free plan doesn’t) — or another way to reach a model, such as an Anthropic API key, Amazon Bedrock, or a local endpoint ([below](#choosing-the-model-provider)). Tug runs Claude Code, and the first-launch setup of Tug installs the `claude` program (if needed) and logs you in.
+- A paid Claude plan that includes Claude Code, such as Pro or Max (the free plan doesn’t) — or another way to reach a model, such as an Anthropic API key, Amazon Bedrock, or a local endpoint ([below](#choosing-the-model-provider)). Tug runs Claude Code by default, and the first-launch setup of Tug installs the `claude` program (if needed) and logs you in. A session can instead run [OpenCode](#choosing-the-coding-agent), which you install yourself.
 - The `git` program for changes and commits. If `git` isn’t on your Mac, setup offers to install Apple’s Command Line Tools (about 3 GB). You can skip the install at first and add `git` later, when you’re ready for your first commit.
 
 ### Choosing the model provider
@@ -72,6 +72,10 @@ model = "qwen3-coder"           # any tool-capable model you have pulled
 ```
 
 `method = "subscription"` is the default and can be stated explicitly, and it is the way back from either door. The wizard writes this file for you and rewrites the whole `[provider]` table each time, so the two doors describe the same choice; the form asks for less than the file can say — a gateway’s model, a session token, an `*_env` name — so a hand edit remains the fuller spelling. Every method also takes an `extra_env` table of additional variables to set on each spawn. A key may be given literally or named by an `*_env` field — a malformed file, a typo’d key, or a named variable that isn’t set is reported on the Session card where the session would have started, rather than silently falling back, or on the wizard’s row if the wizard is what wrote it.
+
+### Choosing the coding agent
+
+A Session card runs Claude Code unless you tell it otherwise. The Settings card’s **Coding Agent** row picks the deck-wide default, and `/agent` in a session picks it for that card — as does clicking the chip above the prompt that names the running agent — either way the choice starts a fresh session in the card, and the conversation you were in stays resumable with `/resume`. Choosing **OpenCode** runs [`opencode acp`](https://opencode.ai/docs/), which Tug expects on your `PATH`; Tug configures its provider from the same `[provider]` table described above, so an Ollama, gateway, or Bedrock setup carries over. The Claude Code subscription does not: OpenCode keeps its own credentials, so run `opencode auth login` for an account-based setup. OpenCode sessions have the core surfaces — prompts, streamed answers and reasoning, tools and their permissions, questions, interrupt and resume — but not rewind, side questions, subagent lanes, working-root changes or the skills and hooks inventories, and Tug says so rather than offering a control that cannot work.
 
 Looking for an earlier version? [See all releases](https://github.com/kocienda/tug/releases). Want to know what changed? [Release notes](https://github.com/kocienda/tug/releases).
 

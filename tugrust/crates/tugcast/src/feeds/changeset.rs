@@ -4692,6 +4692,7 @@ Some context.
             arc_id: None,
             arc_name: None,
             line_id: String::new(),
+            agent: tugcore::agent::AgentKind::ClaudeCode,
             background: false,
             last_turn_end_at: 0,
             last_attended_at: 0,

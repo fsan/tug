@@ -49,6 +49,13 @@ import {
   parsePersistedPermissionMode,
   resolveSeedPermissionMode,
 } from "./permission-mode";
+import {
+  AGENT_DEFAULT_DOMAIN,
+  AGENT_DEFAULT_KEY,
+  AGENT_DOMAIN,
+  parsePersistedAgent,
+  resolveSeedAgent,
+} from "./agent";
 
 /**
  * Resolve the permission mode a freshly-spawned session should start in,
@@ -75,6 +82,23 @@ function resolveSpawnPermissionMode(cardId: string): string | undefined {
     client.get(PERMISSION_MODE_DEFAULT_DOMAIN, PERMISSION_MODE_DEFAULT_KEY),
   );
   return resolveSeedPermissionMode(persisted, globalDefault);
+}
+
+/**
+ * Resolve the coding agent a spawn should run, read synchronously from the
+ * tugbank cache: the card's own agent, else the deck-wide default, else
+ * Claude Code. `undefined` only when the tugbank client is not ready — the
+ * caller then omits the field and tugcast reads an absent agent as Claude
+ * Code, the same answer.
+ */
+function resolveSpawnAgent(cardId: string): string | undefined {
+  const client = getTugbankClient();
+  if (client === null) return undefined;
+  const persisted = parsePersistedAgent(client.get(AGENT_DOMAIN, cardId));
+  const globalDefault = parsePersistedAgent(
+    client.get(AGENT_DEFAULT_DOMAIN, AGENT_DEFAULT_KEY),
+  );
+  return resolveSeedAgent(persisted, globalDefault);
 }
 
 /**
@@ -173,6 +197,7 @@ export function sendSpawnSession(
   relocateFrom?: string,
 ): void {
   const permissionMode = resolveSpawnPermissionMode(cardId);
+  const agent = resolveSpawnAgent(cardId);
   const frame = encodeSpawnSession(
     cardId,
     tugSessionId,
@@ -182,6 +207,7 @@ export function sendSpawnSession(
     tag,
     lineId,
     relocateFrom,
+    agent,
   );
   logSessionLifecycle("spawn.frame_send", {
     card_id: cardId,
@@ -189,6 +215,7 @@ export function sendSpawnSession(
     project_dir: projectDir,
     session_mode: sessionMode,
     permission_mode: permissionMode ?? "",
+    agent: agent ?? "",
     tag: tag ?? "",
     line_id: lineId ?? "",
     relocate_from: relocateFrom ?? "",

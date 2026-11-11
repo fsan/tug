@@ -46,6 +46,7 @@ import { DefaultModelStore } from "./default-model-store";
 import { DefaultEffortStore } from "./default-effort-store";
 import { DefaultPermissionModeStore } from "./default-permission-mode-store";
 import { MODEL_CATALOG_DOMAIN, readModelCatalog } from "./model-catalog";
+import { agentFeatures, DEFAULT_AGENT_KIND } from "@tugproto/agent";
 
 /**
  * Build the defaults-shaped metadata snapshot. Pure — every input is a
@@ -79,6 +80,12 @@ export function buildDefaultsSnapshot(
     slashCommands: [],
     models: catalog ?? [],
     effort,
+    // No session stands behind these defaults, so there is no agent to
+    // report: the defaults context is Claude Code's, and nothing on this panel
+    // gates on the agent (the Settings card's Coding Agent row owns that
+    // choice, bound directly to `dev.tugapp.agent`).
+    agent: DEFAULT_AGENT_KIND,
+    features: agentFeatures(DEFAULT_AGENT_KIND),
   };
   lastBuild = { modelSelector, permissionMode, effort, catalog, snapshot };
   return snapshot;

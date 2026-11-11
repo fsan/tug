@@ -28,6 +28,10 @@ import type {
   SessionCapabilities,
 } from "./types.ts";
 import { IPC_VERSION } from "./types.ts";
+import {
+  CLAUDE_CODE_FEATURES,
+  DEFAULT_AGENT_KIND,
+} from "@tugproto/agent";
 import { isRecord } from "./claude-wire.ts";
 import { extractFrontmatter } from "./context-breakdown.ts";
 import { readFrontmatterField } from "./skills-inventory.ts";
@@ -140,6 +144,8 @@ export function buildSessionCapabilities(
     account: asObject(obj.account),
     effort,
     version,
+    agent: DEFAULT_AGENT_KIND,
+    features: [...CLAUDE_CODE_FEATURES],
     ipc_version: IPC_VERSION,
   };
 }

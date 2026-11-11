@@ -17,6 +17,14 @@ import type { FeedStore } from "./feed-store";
 import type { FeedIdValue } from "../protocol";
 import type { CompletionProvider, CompletionItem } from "./tug-text-types";
 import { scoreCommandMatch } from "./text-match";
+import {
+  AGENT_FEATURES,
+  type AgentFeature,
+  type AgentKind,
+  agentFeatures,
+  DEFAULT_AGENT_KIND,
+  parseAgentKind,
+} from "@tugproto/agent";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -95,6 +103,22 @@ export interface SessionMetadataSnapshot {
    * respawn-to-apply ([R07]) emits no fresh metadata for a resumed session.
    */
   effort: string | null;
+  /**
+   * The coding agent backing this session, from
+   * `session_capabilities.agent`. An absent field is a Claude Code session
+   * (the only backend that existed before it), so this defaults to
+   * {@link DEFAULT_AGENT_KIND} rather than to "unknown": the route badge reads
+   * it, and a null there would make every pre-existing card render an
+   * indeterminate route.
+   */
+  agent: AgentKind;
+  /**
+   * The Tug surfaces this agent implements, from
+   * `session_capabilities.features`; when the frame omits the list it is the
+   * agent's shipped set ({@link agentFeatures}). A control whose feature is
+   * missing is hidden rather than offered and failed on the wire.
+   */
+  features: readonly AgentFeature[];
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -108,6 +132,8 @@ const EMPTY_SNAPSHOT: SessionMetadataSnapshot = {
   slashCommands: [],
   models: [],
   effort: null,
+  agent: DEFAULT_AGENT_KIND,
+  features: agentFeatures(DEFAULT_AGENT_KIND),
 };
 
 // ── Reconciliation: two sources, one derived snapshot ──────────────────────────
@@ -137,6 +163,8 @@ interface CapabilitiesRegion {
   effort: string | null;
   commands: SlashCommandInfo[];
   version: string | null;
+  agent: AgentKind;
+  features: readonly AgentFeature[];
 }
 
 const EMPTY_CAPABILITIES: CapabilitiesRegion = {
@@ -144,6 +172,8 @@ const EMPTY_CAPABILITIES: CapabilitiesRegion = {
   effort: null,
   commands: [],
   version: null,
+  agent: DEFAULT_AGENT_KIND,
+  features: agentFeatures(DEFAULT_AGENT_KIND),
 };
 
 /**
@@ -215,6 +245,8 @@ function reconcileSnapshot(
         : cap.commands,
     models: cap.models,
     effort: opt.effort ?? cap.effort,
+    agent: cap.agent,
+    features: cap.features,
   };
 }
 
@@ -298,6 +330,25 @@ function parseCapabilityModels(raw: unknown): CapabilityModel[] {
     out.push(model);
   }
   return out;
+}
+
+/**
+ * Parse the `features` array of a `session_capabilities` payload, narrowed to
+ * the known {@link AGENT_FEATURES}. An absent (or non-array) field means the
+ * frame does not narrow the agent's shipped set, which the caller supplies as
+ * `fallback`; an array — even an empty one — is the backend's own answer and is
+ * taken as given, so a backend can declare fewer surfaces than its kind's
+ * default. Unknown entries are dropped, so a newer tugcode naming a surface
+ * this deck has never heard of neither hides the rest nor is offered blindly.
+ */
+function parseFeatures(
+  raw: unknown,
+  fallback: readonly AgentFeature[],
+): readonly AgentFeature[] {
+  if (!Array.isArray(raw)) return fallback;
+  return raw.filter((entry): entry is AgentFeature =>
+    (AGENT_FEATURES as readonly string[]).includes(entry as string),
+  );
 }
 
 /** Validate and normalize a category string. */
@@ -540,6 +591,10 @@ export class SessionMetadataStore extends Subscribable {
 
     if (payloadType === "session_capabilities") {
       const cap = payload as Record<string, unknown>;
+      // Absent `agent` predates the field and means Claude Code, which is
+      // `parseAgentKind`'s fallback; absent `features` means "everything the
+      // agent's kind ships".
+      const agent = parseAgentKind(cap.agent);
       this._capabilities = {
         models: parseCapabilityModels(cap.models),
         // tugcode surfaces the current effort level here (it owns `--effort`);
@@ -554,6 +609,8 @@ export class SessionMetadataStore extends Subscribable {
         // Claude Code badge reads a real version from the drop instead of "?"
         // until the first turn's `system_metadata` lands.
         version: typeof cap.version === "string" ? cap.version : null,
+        agent,
+        features: parseFeatures(cap.features, agentFeatures(agent)),
       };
       // The authoritative effort just landed → drop any optimistic override.
       delete this._optimistic.effort;

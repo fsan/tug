@@ -474,6 +474,8 @@ const errorFrame = obj({
     "send_ready_timeout",
     "send_respawn_timeout",
     "stub_replay_exhausted",
+    // The ACP backend: spawn, handshake, or a prompt against `opencode acp`.
+    "opencode_backend",
   )),
 });
 

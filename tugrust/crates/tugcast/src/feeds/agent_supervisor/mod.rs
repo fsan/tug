@@ -28,6 +28,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tugcore::agent::AgentKind;
 use tugcore::instance::Paths;
 
 use futures::FutureExt;
@@ -384,6 +385,11 @@ pub enum ControlError {
     /// point past, silently.
     #[error("spawn_session is missing line_id")]
     MissingLineId,
+    /// The payload named a coding agent this build does not know. Refused
+    /// rather than defaulted: falling back to Claude Code would start a
+    /// conversation the card cannot resume as what it asked for.
+    #[error("unknown coding agent: {agent}")]
+    UnknownAgent { agent: String },
 }
 
 /// Central owner of all Claude Code sessions for a single tugcast process.
@@ -756,6 +762,7 @@ fn build_listed_union(
                     // a scanned session has no `sessions` row to carry a card
                     // at all.
                     background: false,
+                    agent: AgentKind::ClaudeCode,
                     last_turn_end_at: 0,
                     last_attended_at: 0,
                 },
@@ -884,6 +891,11 @@ struct OwnedControlPayload {
     /// New-vs-resume choice. Absent values default to
     /// `SessionMode::New` so pre-4.5 payloads keep the step-4k behavior.
     session_mode: SessionMode,
+    /// The coding agent a `mode=new` spawn runs. Absent means Claude Code.
+    /// On a resume the ledger row's kind is the authority; the payload field
+    /// is accepted so a card can name a fresh session's agent in the same
+    /// frame it starts it.
+    agent: AgentKind,
     /// Deck-wide / per-card default permission mode tugdeck resolved at spawn
     /// time, forwarded to tugcode as `--permission-mode`. `None` when the
     /// payload omits it (older client, or a card with no configured default) —
@@ -927,6 +939,19 @@ fn parse_control_payload_owned(payload: &[u8]) -> Result<OwnedControlPayload, Co
         .map(|s| s.to_string());
     let session_mode =
         SessionMode::from_wire_str(value.get("session_mode").and_then(|v| v.as_str()));
+    // An absent agent is Claude Code — the meaning every payload that predates
+    // this field carries. A present but unknown name is refused rather than
+    // defaulted: running a different backend than the card asked for would
+    // silently start a conversation it cannot read back.
+    let agent = match value.get("agent").and_then(|v| v.as_str()) {
+        None | Some("") => AgentKind::ClaudeCode,
+        Some(name) => AgentKind::parse(name).ok_or_else(|| {
+            warn!(agent = name, "spawn_session: unknown coding agent");
+            ControlError::UnknownAgent {
+                agent: name.to_string(),
+            }
+        })?,
+    };
     let permission_mode = value
         .get("permission_mode")
         .and_then(|v| v.as_str())
@@ -952,6 +977,7 @@ fn parse_control_payload_owned(payload: &[u8]) -> Result<OwnedControlPayload, Co
         tug_session_id: TugSessionId::new(tug_session_id),
         project_dir,
         session_mode,
+        agent,
         permission_mode,
         tag,
         line_id,
@@ -5441,6 +5467,11 @@ impl AgentSupervisor {
             // a session restored from the ledger at boot attaches its next
             // segment to the line it already belongs to.
             entry.line_id = Some(row.line_id.clone());
+            // The backend that wrote this transcript. The row is the only
+            // authority a restarted process has — the payload that named
+            // the agent is long gone — so a rebound entry must resume on
+            // the same agent it was spawned under.
+            entry.agent = row.agent;
             tracing::info!(
                 target: "dev::session-lifecycle",
                 event = "rebind.entry",
@@ -5680,6 +5711,7 @@ pub(crate) fn test_minimal_supervisor_with_recorder_reading(
             _project_dir: &std::path::Path,
             _session_id: &str,
             _session_mode: SessionMode,
+            _agent: AgentKind,
             _resume_claude_session_id: Option<&str>,
             _permission_mode: Option<&str>,
             _relocate_from: Option<&crate::feeds::agent_bridge::RelocateOrigin>,
@@ -6296,6 +6328,7 @@ mod tests {
                 arc_name: None,
                 line_id: line_id.to_string(),
                 background: false,
+                agent: AgentKind::ClaudeCode,
                 last_turn_end_at: 0,
                 last_attended_at: 0,
             },
@@ -6507,6 +6540,7 @@ mod tests {
             arc_name: None,
             line_id: String::new(),
             background: false,
+            agent: AgentKind::ClaudeCode,
             last_turn_end_at: 0,
             last_attended_at: 0,
         };
@@ -6550,6 +6584,7 @@ mod tests {
             arc_name: None,
             line_id: String::new(),
             background: false,
+            agent: AgentKind::ClaudeCode,
             last_turn_end_at: 0,
             last_attended_at: 0,
         };
@@ -6587,6 +6622,7 @@ mod tests {
             arc_name: None,
             line_id: String::new(),
             background: false,
+            agent: AgentKind::ClaudeCode,
             last_turn_end_at: 0,
             last_attended_at: 0,
         };
@@ -6633,6 +6669,7 @@ mod tests {
             arc_name: None,
             line_id: String::new(),
             background: false,
+            agent: AgentKind::ClaudeCode,
             last_turn_end_at: 0,
             last_attended_at: 0,
         };
@@ -6672,6 +6709,7 @@ mod tests {
             _project_dir: &std::path::Path,
             _session_id: &str,
             _session_mode: SessionMode,
+            _agent: AgentKind,
             _resume_claude_session_id: Option<&str>,
             _permission_mode: Option<&str>,
             _relocate_from: Option<&crate::feeds::agent_bridge::RelocateOrigin>,
@@ -7259,6 +7297,7 @@ mod tests {
             std::path::Path::new("/workspace-B-from-per-call"),
             "sess-per-call",
             SessionMode::New,
+            AgentKind::ClaudeCode,
             None,
             None,
             None,
@@ -8335,6 +8374,7 @@ mod tests {
             card_id: "card-1",
             tag: None,
             line_id: None,
+            agent: AgentKind::ClaudeCode,
         });
         {
             let mut entry = entry_arc.lock().await;
@@ -8462,6 +8502,7 @@ mod tests {
             card_id: "card-1",
             tag: None,
             line_id: None,
+            agent: AgentKind::ClaudeCode,
         });
         entry_arc.lock().await.claude_session_id = Some(claude_id.to_owned());
         write_turn_latch(&recorder, &entry_arc, |entry| entry.set_turn_active(true)).await;
@@ -10635,6 +10676,7 @@ mod tests {
             card_id: "card-1",
             tag: None,
             line_id: Some("line-1"),
+            agent: AgentKind::ClaudeCode,
         });
 
         let actions: Vec<serde_json::Value> = std::iter::from_fn(|| rx.try_recv().ok())
@@ -10695,6 +10737,7 @@ mod tests {
             card_id: "card-1",
             tag: None,
             line_id: Some("line-1"),
+            agent: AgentKind::ClaudeCode,
         });
 
         let actions: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok())
@@ -11638,6 +11681,7 @@ mod tests {
             card_id: "c1",
             tag: None,
             line_id: None,
+            agent: AgentKind::ClaudeCode,
         });
         let first = drain_until_action(&mut rx, "session_updated");
         assert_eq!(first["fields"]["turn_count"].as_i64(), Some(0));
@@ -13415,6 +13459,7 @@ mod bridge_panic_tests {
             _project_dir: &std::path::Path,
             _session_id: &str,
             _session_mode: SessionMode,
+            _agent: AgentKind,
             _resume_claude_session_id: Option<&str>,
             _permission_mode: Option<&str>,
             _relocate_from: Option<&crate::feeds::agent_bridge::RelocateOrigin>,
@@ -13715,6 +13760,7 @@ mod replay_bracket_close_tests {
             _project_dir: &std::path::Path,
             _session_id: &str,
             _session_mode: SessionMode,
+            _agent: AgentKind,
             _resume_claude_session_id: Option<&str>,
             _permission_mode: Option<&str>,
             _relocate_from: Option<&crate::feeds::agent_bridge::RelocateOrigin>,
@@ -13809,6 +13855,7 @@ mod replay_bracket_close_tests {
             _project_dir: &std::path::Path,
             _session_id: &str,
             _session_mode: SessionMode,
+            _agent: AgentKind,
             _resume_claude_session_id: Option<&str>,
             permission_mode: Option<&str>,
             _relocate_from: Option<&crate::feeds::agent_bridge::RelocateOrigin>,

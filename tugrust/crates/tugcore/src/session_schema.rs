@@ -118,7 +118,11 @@ pub const CREATE_SESSIONS_SQL: &str = "
         -- attended the session. The session reads `done` while the
         -- first is newer than the second. Both `0` until written.
         last_turn_end_at  INTEGER NOT NULL DEFAULT 0,
-        last_attended_at  INTEGER NOT NULL DEFAULT 0
+        last_attended_at  INTEGER NOT NULL DEFAULT 0,
+        -- The coding agent this segment runs (`claude-code` / `opencode`).
+        -- A row from before the column reads as Claude Code, the only
+        -- backend that existed when it was written.
+        agent             TEXT NOT NULL DEFAULT 'claude-code'
     );
 
     CREATE INDEX IF NOT EXISTS sessions_workspace_recent

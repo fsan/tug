@@ -92,6 +92,15 @@ export const LOCAL_SLASH_COMMANDS = [
     name: "mode",
     description: "Set the permission mode for this session",
   },
+  // Which agent runs is a card's backend, not a knob on its session — `/agent`
+  // opens the picker, and naming an agent (`/agent opencode`) switches
+  // directly. Either way a switch starts a fresh session, because an agent
+  // cannot resume another agent's conversation.
+  {
+    name: "agent",
+    description: "Switch this card's coding agent (starts a new session)",
+    takesArgs: true,
+  },
   {
     name: "rewind",
     description: "Rewind the conversation (and optionally code) to an earlier turn",

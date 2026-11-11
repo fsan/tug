@@ -105,6 +105,7 @@ impl AgentSupervisor {
                     parsed.tug_session_id,
                     project_dir_str,
                     parsed.session_mode,
+                    parsed.agent,
                     parsed.permission_mode,
                     parsed.tag,
                     parsed.line_id,

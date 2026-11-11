@@ -1603,6 +1603,16 @@ export class SessionManager {
    * observable signal we could plumb that would distinguish "hung"
    * from "idle" without sending a probe.
    */
+  /**
+   * Backend-neutral name for {@link spawnClaudeAndWatch}, the readiness gate
+   * every {@link AgentSession} exposes. The claude-specific name is kept: it
+   * is what this class's own docs and tests reach for, and it says exactly
+   * what it starts.
+   */
+  spawnAgentAndWatch(): Promise<void> {
+    return this.spawnClaudeAndWatch();
+  }
+
   spawnClaudeAndWatch(): Promise<void> {
     const claudeId = this.resolveClaudeId();
     // A crash respawn of a segment claude never wrote to disk — a rotation's

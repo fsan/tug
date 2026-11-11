@@ -1176,6 +1176,7 @@ fn history_sessions(ctx: &OperatorContext, scope: HistoryScope) -> Result<Vec<Hi
                     arc_id: None,
                     arc_name: None,
                     line_id: entry.line_id,
+                    agent: tugcore::agent::AgentKind::ClaudeCode,
                     background: false,
                     last_turn_end_at: 0,
                     last_attended_at: 0,

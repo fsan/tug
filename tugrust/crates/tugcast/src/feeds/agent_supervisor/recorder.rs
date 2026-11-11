@@ -3,6 +3,7 @@
 //! change pushes.
 
 use super::*;
+use tugcore::agent::AgentKind;
 use tugcore::instance::Paths;
 
 /// Per-session metadata captured at session_init time.
@@ -25,6 +26,10 @@ pub struct SessionRecord<'a> {
     /// line to name — a path that has not been taught about lines yet — and
     /// the segment then takes a line of its own.
     pub line_id: Option<&'a str>,
+    /// The coding backend writing this segment, read off the `LedgerEntry`
+    /// the bridge holds. Written to the new row alone; a row that already
+    /// exists keeps the agent it was born with.
+    pub agent: AgentKind,
 }
 
 /// Writer for the per-session ledger.
@@ -349,7 +354,7 @@ impl LedgerSessionsRecorder {
 impl SessionsRecorder for LedgerSessionsRecorder {
     fn record(&self, record: SessionRecord<'_>) {
         let now = crate::session_ledger::now_millis();
-        if let Err(err) = self.ledger.record_spawn(
+        if let Err(err) = self.ledger.record_spawn_as(
             record.session_id,
             record.workspace_key,
             record.project_dir,
@@ -357,6 +362,7 @@ impl SessionsRecorder for LedgerSessionsRecorder {
             now,
             record.line_id.unwrap_or(record.session_id),
             record.tag,
+            record.agent,
         ) {
             warn!(error = %err, session_id = record.session_id, "ledger record_spawn failed");
             return;
@@ -983,6 +989,7 @@ mod tests {
             card_id: "card-1",
             tag: None,
             line_id: None,
+            agent: AgentKind::ClaudeCode,
         });
         while rx.try_recv().is_ok() {}
         let turn_active = |rx: &mut broadcast::Receiver<Frame>| {
@@ -1029,6 +1036,7 @@ mod tests {
             card_id: "card-1",
             tag: None,
             line_id: None,
+            agent: AgentKind::ClaudeCode,
         });
         let row = ledger.get("claude-abc").unwrap().expect("row");
         assert_eq!(row.workspace_key, "ws-1");
@@ -1063,6 +1071,7 @@ mod tests {
             card_id: "card-1",
             tag: None,
             line_id: None,
+            agent: AgentKind::ClaudeCode,
         });
         expect_ping(Arc::clone(&signal), "record (spawn)").await;
 
@@ -1083,6 +1092,7 @@ mod tests {
             card_id: "card-1",
             tag: None,
             line_id: None,
+            agent: AgentKind::ClaudeCode,
         });
         recorder.record_user_prompt("claude-abc", "hello world");
         let row = ledger.get("claude-abc").unwrap().unwrap();
@@ -1104,6 +1114,7 @@ mod tests {
             card_id: "card-1",
             tag: None,
             line_id: None,
+            agent: AgentKind::ClaudeCode,
         });
         // Live turns touch recency only; the count is the engine reconcile
         // ([P08]). Reconcile to 3, then live turns leave the count untouched.
@@ -1131,6 +1142,7 @@ mod tests {
             card_id: "card-1",
             tag: None,
             line_id: None,
+            agent: AgentKind::ClaudeCode,
         });
 
         // An errored end keeps its own reading and raises no mark ([B03]).
@@ -1154,6 +1166,7 @@ mod tests {
             card_id: "card-1",
             tag: None,
             line_id: None,
+            agent: AgentKind::ClaudeCode,
         });
         recorder.record_turn("claude-abc", true);
         let row = ledger.get("claude-abc").unwrap().expect("row");
@@ -1178,6 +1191,7 @@ mod tests {
             card_id: "card-1",
             tag: None,
             line_id: None,
+            agent: AgentKind::ClaudeCode,
         });
 
         recorder.mark_closed("claude-abc");
@@ -1206,6 +1220,7 @@ mod tests {
             card_id: "card-1",
             tag: None,
             line_id: None,
+            agent: AgentKind::ClaudeCode,
         });
         recorder.mark_failed("claude-abc");
 
@@ -1226,6 +1241,7 @@ mod tests {
             card_id: "card-1",
             tag: None,
             line_id: None,
+            agent: AgentKind::ClaudeCode,
         });
         recorder.mark_closed("claude-abc");
         recorder.record_turn("claude-abc", true);

@@ -26,15 +26,19 @@ import { join } from "node:path";
 import type { InboundMessage } from "@tugproto/inbound";
 import type { OutboundMessage } from "./types.ts";
 import { IPC_VERSION } from "./types.ts";
-import type { SessionManager } from "./session.ts";
+import type { AgentSession } from "./agent-session.ts";
 import { errorFrame } from "./ipc.ts";
 import { buildSkillsInventory } from "./skills-inventory.ts";
 import { buildHooksInventory } from "./hooks-inventory.ts";
 
 /** Ambient state a verb handler may need beyond the message itself. */
 export interface InboundDispatchCtx {
-  /** Null until the session is initialized; handlers no-op via `?.`. */
-  sessionManager: SessionManager | null;
+  /**
+   * Null until the session is initialized; handlers no-op via `?.`. Which
+   * coding agent is behind it is the backend's business — see
+   * {@link AgentSession}.
+   */
+  sessionManager: AgentSession | null;
   /** This tugcode process's session id (logging / inventory correlation). */
   sessionId: string;
   /** The session's project cwd (inventory roots). */
